@@ -1,0 +1,15 @@
+# Python 3.12. Versions used to convert the models and generate the test data.
+ai-edge-litert==2.1.2
+flatbuffers==25.12.19
+numpy==2.2.6
+onnx==1.20.1
+onnx-graphsurgeon==0.6.1
+onnx2tf==2.6.9
+onnxruntime==1.26.0
+onnxsim==0.6.5
+opencv-python-headless==5.0.0.93
+psutil==5.9.5
+sng4onnx==2.0.1
+tensorflow==2.21.0
+tf-keras==2.21.0
+trimesh==5.1.0

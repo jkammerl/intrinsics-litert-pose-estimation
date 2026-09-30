@@ -1,0 +1,10 @@
+{
+  "confidence_threshold": 0.6,
+  "visibility_threshold": 0.6,
+  "scale": 0.7875000238418579,
+  "resized_hw": [
+    378,
+    504
+  ],
+  "detections": []
+}
