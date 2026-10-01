@@ -1,0 +1,92 @@
+# Web demo
+
+![The web demo after an estimate: 1.9 mm and 0.2° from the true pose](screenshot.jpg)
+
+A browser demo of the LiteRT pipeline. A simulated RGB-D camera (the Orbbec
+Gemini 335Le of OMTS's Lab BB-01 cell: 1280x800, same intrinsics) looks at
+the raw stock on a table. You move and rotate the box in 3D. **Estimate pose**
+then:
+
+1. renders what the camera sees: the color image, and a depth image
+   (meters along the optical axis, rendered into a float32 target) registered
+   to it;
+2. sends both to the demo server, which runs the IOC pose estimator service's
+   pipeline (RF-DETR segmentation, then FoundationPose with 280 pose
+   hypotheses, refinement and scoring) on [LiteRT](https://github.com/google-ai-edge/litert):
+   on the GPU through LiteRT's WebGPU accelerator, or with XNNPACK on the CPU;
+3. shows the result:
+   * the estimated transformation (object in camera, OpenCV frame) next to the
+     box's true pose, with translation, rotation and ADD-S errors. The box
+     maps onto itself under half-turns, so rotations are compared modulo
+     those symmetries;
+   * the camera image with the segmentation mask, box and the CAD model
+     rendered at the estimated pose; the CAD model alone at the estimate;
+   * the estimate as a green ghost in the 3D view;
+   * latencies of each step, from rendering in the browser to segmentation
+     and pose estimation in LiteRT;
+   * where LiteRT ran each network (GPU or CPU, fully delegated or not, and
+     why it fell back).
+
+The pipeline is the same C++ code as the ROS node and the Intrinsic service
+backend (`cpp/`), used through the Python module (`python/`). It reproduces the
+IOC service's outputs (`docs/service_golden.md`).
+
+## Run
+
+Build the Python module (see `intrinsic/README.md`), then:
+
+```bash
+pip install numpy opencv-python-headless   # if missing
+PYTHONPATH=<dir with litert_pose_estimation*.so> python3 demo/server.py
+# open http://localhost:8765
+```
+
+| Control | |
+| :--- | :--- |
+| Move / Rotate (W / E) | Drag the gizmo to move or rotate the box (in its own frame). |
+| 3D view / Camera | Orbit around the scene, or look through the camera. The inset shows the camera's view. |
+| Random pose, Reset (R) | Put the box at a random resting pose on the table, or back. |
+| Accelerator | `auto` uses the GPU if there is a hardware one, `gpu` forces LiteRT's WebGPU accelerator (also on a software Vulkan device), `cpu` uses XNNPACK. |
+| Refinement iterations | The service uses 6. Fewer are faster at some cost in accuracy. |
+
+The first estimate per accelerator setting also compiles the models (shown
+separately as "model compilation"). The page loads three.js from jsDelivr.
+
+URL parameters, used by the tests: `accelerator`, `iterations`, `pose` (4x4
+rows as JSON) or `rest=<u>,<v>,<yaw deg>,<face x|y|z>` (a resting pose on the
+table), and `autorun` (estimates once loaded and reports the outcome to
+`/api/report`). `server.py --save_dir DIR` saves each request's images.
+
+## API
+
+`POST /api/estimate` takes the frame as JSON (`width`, `height`, `rgb` as
+base64 RGB bytes, `depth` as base64 float32 meters, `camera_matrix`,
+`accelerator`, `iterations`) and returns for each detection the box, scores,
+mask (`numpy.packbits`, base64) and 4x4 pose, plus `timings_ms` and
+`accelerators`. See `server.py`.
+
+## Tests
+
+```bash
+PYTHONPATH=<dir with litert_pose_estimation*.so>:demo python3 demo/demo_test.py -v
+```
+
+* **Server**: the service's recorded capture (`testdata/service_golden`),
+  sent through the HTTP API as the page sends frames, gives the service's pose
+  (1 mm, 0.5° modulo symmetry, score within 0.05) and segmentation; request
+  decoding and errors; static files.
+* **WebGPU inference**: the same capture with `accelerator=gpu` must run
+  RF-DETR and the FoundationPose refiner on LiteRT's WebGPU accelerator and
+  give the CPU's detections and pose (1 mm, 0.5°).
+* **Browser** (headless Chrome, WebGL through SwiftShader): `pose.js`'s unit
+  tests (`web/test/pose_test.html`: rotation errors modulo symmetry,
+  roll/pitch/yaw, the projection from the camera matrix against the pinhole
+  model, mask and base64 decoding, ADD-S); and the whole demo, from the
+  rendered RGB-D frame to the estimate, for two box poses on the CPU and one
+  on the WebGPU accelerator: the box must be found and its pose recovered
+  within 5 mm and 5° of the truth (10° on the GPU, run with one iteration).
+
+The GPU tests need a Vulkan device; a software one (Mesa's llvmpipe) works but
+is slow. They are skipped without one, the browser tests without Chrome
+(`$CHROME` selects the binary). See also `cpp/gpu_test.cc` for the GPU
+accelerator tests of the C++ library.

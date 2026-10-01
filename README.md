@@ -16,6 +16,7 @@ recorded inputs (`docs/service_golden.md`).
 | `cpp/` | The C++ pipeline: LiteRT model wrapper with GPU/CPU selection (`litert_model.h`), RF-DETR (`rfdetr.h`), the FoundationPose port (`foundationpose.h`), the full pipeline (`pose_estimator.h`), and tests. |
 | [`ros/litert_pose_estimation/`](ros/litert_pose_estimation/README.md) | ROS 2 node (`vision_msgs/Detection3DArray`, `~/estimate` service), launch file, golden end-to-end test. |
 | `ros_demo/` | ROS 2 demo: publishes a recorded RGB-D frame and triggers the node. |
+| [`demo/`](demo/README.md) | Web demo: move the raw stock in a 3D scene, estimate its pose from the rendered RGB-D frame with LiteRT, compare with the truth. |
 | `python/` | Python bindings (`litert_pose_estimation` module). |
 | [`intrinsic/`](intrinsic/README.md) | Intrinsic integration: LiteRT backend for the IOC pose estimator service, drop-in service image, tests. |
 | `testdata/` | Rendered RGB-D scenes with the ONNX models' outputs, and the IOC service's recorded inputs and outputs (`service_golden/`). |
@@ -56,8 +57,9 @@ The tensor specs are in [models/README.md](models/README.md).
 The C++ pipeline (`cpp/pose_estimator.h`) also follows the service in the
 FoundationPose chunking: it refines and scores the candidates in chunks of
 the service's `batch_size` (128 in OMTS) with scorers converted for those
-batch sizes (`foundationpose_score_b128.tflite`, `_b24`), so that its scores
-match the service's.
+batch sizes (`foundationpose_score_b128.tflite`, `_b24`; and `_b240`, `_b40`
+for the service's default of 240), so that its scores match the service's.
+Other batch sizes need their scorers (`tools/convert.py --score_batches`).
 
 ## C++ tests
 
@@ -87,9 +89,24 @@ The tests check, against the ONNX models' outputs:
   `PERCEPTION_ACCELERATOR=auto|gpu|cpu` to choose LiteRT's hardware;
 * RF-DETR end to end, from `rgb.png` through `cpp/rfdetr.cc` and the TFLite
   model to boxes, scores and masks, against the original `segmentation.onnx`
-  (masks agree to IoU > 0.99; so far they are identical). For Android, build the same sources
-with the NDK and link `libLiteRt.so` from LiteRT's Maven package
-(`com.google.ai.edge.litert`).
+  (masks agree to IoU > 0.99; so far they are identical);
+* LiteRT's GPU accelerator (`cpp/gpu_test.cc`): RF-DETR and the
+  FoundationPose refiner on the GPU through WebGPU (Vulkan) against the
+  service's outputs and the CPU's; the scorers, which some GPUs can't hold
+  (157 MB tensors at batch 128) or compute wrongly (llvmpipe at batch 24),
+  must still give the CPU's scores; and the automatic CPU fallback without a
+  hardware GPU or without the accelerator library. A software Vulkan device
+  (Mesa's llvmpipe) is enough to run them; without any Vulkan device they are
+  skipped.
+
+Before a network runs on the GPU, `perception::Model` runs it once on
+pseudo-random inputs on the GPU and on the CPU and compares the outputs
+(`ModelOptions::validate_gpu`): GPU drivers can compile and run a model and
+still compute it wrongly, and such a network then runs on the CPU, with the
+reason reported.
+
+For Android, build the same sources with the NDK and link `libLiteRt.so` from
+LiteRT's Maven package (`com.google.ai.edge.litert`).
 
 ## Test data
 

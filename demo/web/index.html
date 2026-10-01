@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiteRT Pose Estimation</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>6D pose estimation with LiteRT</h1>
+      <p class="sub">Move or rotate the raw stock, then let the IOC pose estimator's pipeline &mdash;
+        RF-DETR segmentation and FoundationPose, running on <a href="https://github.com/google-ai-edge/litert">LiteRT</a>
+        (GPU through its WebGPU accelerator, or XNNPACK on the CPU) &mdash; find it in the simulated RGB-D camera image.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div class="toolbar" role="toolbar">
+        <div class="seg" id="mode">
+          <button data-mode="translate" class="on" title="Move (W)">Move</button>
+          <button data-mode="rotate" title="Rotate (E)">Rotate</button>
+        </div>
+        <div class="seg" id="view">
+          <button data-view="orbit" class="on" title="Free 3D view">3D view</button>
+          <button data-view="camera" title="What the camera sees">Camera</button>
+        </div>
+        <button id="random" title="Random pose on the table">Random pose</button>
+        <button id="reset" title="Reset (R)">Reset</button>
+      </div>
+      <div class="viewport" id="viewport">
+        <canvas id="three"></canvas>
+        <div class="inset-label" id="inset-label">camera</div>
+      </div>
+      <dl class="gt" id="gt"></dl>
+    </section>
+
+    <section class="panel">
+      <div class="controls">
+        <label>Accelerator
+          <select id="accelerator">
+            <option value="auto">auto (GPU if there is a hardware GPU)</option>
+            <option value="gpu">gpu (LiteRT WebGPU accelerator)</option>
+            <option value="cpu">cpu (XNNPACK)</option>
+          </select>
+        </label>
+        <label>Refinement iterations <output id="iterations-value">6</output>
+          <input type="range" id="iterations" min="1" max="6" value="6">
+        </label>
+        <button id="estimate" class="primary">Estimate pose</button>
+        <p class="status" id="status" role="status">Ready.</p>
+      </div>
+
+      <div class="results" id="results" hidden>
+        <div class="seg" id="image-tabs">
+          <button data-image="overlay" class="on">Estimate overlay</button>
+          <button data-image="render">CAD at estimate</button>
+          <button data-image="input">Camera input</button>
+        </div>
+        <canvas id="result-image" width="1280" height="800"></canvas>
+
+        <h2>Transformation (object in camera, OpenCV frame)</h2>
+        <table class="pose">
+          <thead><tr><th></th><th>x</th><th>y</th><th>z</th><th>roll</th><th>pitch</th><th>yaw</th></tr></thead>
+          <tbody>
+            <tr><th>Estimate</th><td id="e-x"></td><td id="e-y"></td><td id="e-z"></td><td id="e-r"></td><td id="e-p"></td><td id="e-w"></td></tr>
+            <tr class="equiv"><th title="The box maps onto itself under half-turns about its axes, so these rotations are the same pose">&equiv; mod. symmetry</th><td colspan="3"></td><td id="s-r"></td><td id="s-p"></td><td id="s-w"></td></tr>
+            <tr><th>Ground truth</th><td id="g-x"></td><td id="g-y"></td><td id="g-z"></td><td id="g-r"></td><td id="g-p"></td><td id="g-w"></td></tr>
+          </tbody>
+        </table>
+        <p class="units">mm and degrees; rotations as R = Rz(yaw)&middot;Ry(pitch)&middot;Rx(roll).
+          The box maps onto itself under half-turns about its axes; the second row is the estimate's equivalent rotation closest to the truth.</p>
+        <div class="metrics" id="metrics"></div>
+        <pre class="matrix" id="matrix"></pre>
+
+        <h2>Latency</h2>
+        <div class="bar" id="latency-bar"></div>
+        <table class="latency" id="latency"></table>
+
+        <h2>LiteRT</h2>
+        <div class="accel" id="accel"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
