@@ -33,7 +33,9 @@ IOC service's outputs (`docs/service_golden.md`).
 
 ## Run
 
-Build the Python module (see `intrinsic/README.md`), then:
+Get the FoundationPose models (`tools/fetch_foundationpose.sh
+--accept-nvidia-license`, see the top-level README) and build the Python
+module (see `intrinsic/README.md`), then:
 
 ```bash
 pip install numpy opencv-python-headless   # if missing

@@ -1,2 +1,7 @@
 __pycache__/
 /build/
+
+# NVIDIA FoundationPose models: not redistributable, see
+# tools/fetch_foundationpose.sh.
+/models/foundationpose_*.tflite
+/venv/

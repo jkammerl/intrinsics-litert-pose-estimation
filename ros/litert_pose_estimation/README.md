@@ -119,6 +119,8 @@ Parameters (defaults in `config/omts_raw_stock.yaml`): `models_dir`,
 ```bash
 sudo apt install ros-lyrical-vision-msgs   # plus a ROS 2 desktop installation
 git clone <this repository> ~/intrinsics-litert-pose-estimation   # with git-lfs
+# NVIDIA's FoundationPose models, downloaded from NGC and converted (once):
+~/intrinsics-litert-pose-estimation/tools/fetch_foundationpose.sh --accept-nvidia-license
 mkdir -p ~/litert_ws && cd ~/litert_ws
 source /opt/ros/lyrical/setup.bash
 colcon build --base-paths ~/intrinsics-litert-pose-estimation/ros \

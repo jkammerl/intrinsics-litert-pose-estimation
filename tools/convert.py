@@ -55,7 +55,9 @@ def _onnx2tf(onnx_path, out_dir, extra_args):
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
-  for flag in ("segmentation_onnx", "refine_onnx", "score_onnx", "out"):
+  parser.add_argument("--segmentation_onnx",
+                      help="Required unless --only_foundationpose.")
+  for flag in ("refine_onnx", "score_onnx", "out"):
     parser.add_argument("--" + flag, required=True)
   parser.add_argument(
       "--score_batches", default="280",
@@ -63,7 +65,14 @@ def main():
   parser.add_argument(
       "--only_scorer", action="store_true",
       help="Only convert the scorer (for adding batch sizes).")
+  parser.add_argument(
+      "--only_foundationpose", action="store_true",
+      help="Only convert the FoundationPose refiner and scorers (see "
+      "fetch_foundationpose.sh).")
   args = parser.parse_args()
+  if not (args.only_scorer or args.only_foundationpose or
+          args.segmentation_onnx):
+    parser.error("--segmentation_onnx is required")
   os.makedirs(args.out, exist_ok=True)
   # onnx2tf runs onnxsim from PATH.
   os.environ["PATH"] = (
@@ -72,7 +81,8 @@ def main():
 
   with tempfile.TemporaryDirectory() as tmp:
     core = os.path.join(args.out, "rfdetr_core.onnx")
-    if not args.only_scorer:
+    convert_segmentation = not (args.only_scorer or args.only_foundationpose)
+    if convert_segmentation:
       extract_rfdetr_core.main(args.segmentation_onnx, core)
     def foundationpose_args(batch):
       # Keep the NHWC inputs as they are, with a fixed batch.
@@ -85,6 +95,8 @@ def main():
     ]
     if args.only_scorer:
       jobs = []
+    elif not convert_segmentation:
+      jobs = jobs[1:]
     for batch in (int(b) for b in args.score_batches.split(",")):
       name = "foundationpose_score" + ("" if batch == 280 else f"_b{batch}")
       jobs.append((args.score_onnx, name, foundationpose_args(batch)))

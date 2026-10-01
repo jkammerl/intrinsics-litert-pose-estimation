@@ -23,6 +23,23 @@ recorded inputs (`docs/service_golden.md`).
 | `tools/` | Python: conversion, test data generation, reference implementations. |
 | `docs/` | How the golden data was recorded. |
 
+## Models
+
+The RF-DETR segmentation model is in `models/`. NVIDIA's FoundationPose
+models are not: their license (see Licenses) doesn't allow distributing them
+stand-alone. Download them from NVIDIA NGC and convert them to TFLite once,
+before building or running anything else (about 25 minutes and 8 GB of
+memory; needs Python 3.12):
+
+```bash
+tools/fetch_foundationpose.sh --accept-nvidia-license
+```
+
+The script checks the downloads against the checksums that OMTS pins,
+creates a conversion venv (`venv/`, from `tools/requirements.txt`), and writes
+the refiner, the scorers for all the batch sizes used here and their float16
+variants to `models/`.
+
 ## Pipeline
 
 1. **Segmentation** (`rfdetr_seg.tflite`): RF-DETR finds the workpiece in an
@@ -150,6 +167,10 @@ workpiece; no detections expected).
 
 ## Regenerating
 
+`tools/fetch_foundationpose.sh` converts the FoundationPose models (see
+Models). To also convert the segmentation model and regenerate the test
+data:
+
 ```bash
 python3.12 -m venv venv && venv/bin/pip install -r tools/requirements.txt
 cd tools
@@ -179,6 +200,7 @@ NVIDIA's Apache-2.0 FoundationPose code. The FoundationPose models
 are NOT under the Apache License: they are covered by NVIDIA's
 [Deep Learning Models License Agreement](https://developer.download.nvidia.com/licenses/tao_toolkit_21-08_models_eula.pdf),
 which allows distributing them only as part of an application, not as a
-stand-alone product and not under an open-source license. Don't publish this
-repository with them; to share it, remove them and let users convert them
-from NGC (see Regenerating), as OMTS downloads them at build time.
+stand-alone product and not under an open-source license. This repository
+therefore doesn't contain them; `tools/fetch_foundationpose.sh` downloads
+them from NGC (as OMTS does at build time) and converts them, and by running
+it you accept that license.

@@ -17,6 +17,9 @@ inference service (`segmentation_model.run_inference`,
 (`litert_backend.py`, started by `litert_service_main.py`).
 
 ```bash
+# NVIDIA's FoundationPose models, downloaded from NGC and converted (once;
+# the image includes them, so don't publish it):
+tools/fetch_foundationpose.sh --accept-nvidia-license
 # The base image, e.g. from an intrinsic-core or OMTS build:
 podman load -i bazel-bin/external/intrinsic-core+/intrinsic_perception/intrinsic/perception/service/ioc_pose_estimator/ioc_pose_estimator_image.tar
 podman build -f intrinsic/Dockerfile \
