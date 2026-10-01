@@ -18,26 +18,36 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(litert)
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+if(APPLE)
+  # macOS arm64: the GPU accelerator runs on Metal.
+  set(LITERT_WHEEL_URL https://files.pythonhosted.org/packages/1f/09/778399be516866419e3de6257e4f7ab6b8563b2fc204b6353f2361a8b025/ai_edge_litert-2.2.0-cp312-cp312-macosx_12_0_arm64.whl)
+  set(LITERT_WHEEL_SHA256 90fe45c8a0557e15b873f685e33ecaa2302782a8cb09a1ca754d536d5fa30945)
+  set(LITERT_LIBRARY libLiteRt.dylib)
+  set(LITERT_GPU_LIBRARY libLiteRtMetalAccelerator.dylib)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
   set(LITERT_WHEEL_URL https://files.pythonhosted.org/packages/4f/ef/be6341bb3cc935e47a521ea1a173a022d1680d309545579a12dbc739df40/ai_edge_litert-2.2.0-cp312-cp312-manylinux_2_27_aarch64.whl)
   set(LITERT_WHEEL_SHA256 6d3fe2047461fbdd251425960be7a3674dbbf707bd019a01ffe6eb43cc653434)
 else()
   set(LITERT_WHEEL_URL https://files.pythonhosted.org/packages/fa/bc/c4788c401cbe1bb082cb09220b1e35ae8a8f89451b494f4e151a8c93bf4f/ai_edge_litert-2.2.0-cp312-cp312-manylinux_2_27_x86_64.whl)
   set(LITERT_WHEEL_SHA256 4e151f07229b2f714f9b34ea42a9cacffc98953b1f6e832adee4479f6b81f50a)
 endif()
+if(NOT APPLE)
+  set(LITERT_LIBRARY libLiteRt.so)
+  set(LITERT_GPU_LIBRARY libLiteRtWebGpuAccelerator.so)
+endif()
 set(LITERT_WHEEL ${CMAKE_BINARY_DIR}/ai_edge_litert.whl)
 # The LiteRT runtime and its GPU accelerator (ML Drift on WebGPU, which runs
-# on Vulkan on Linux). LiteRT loads the accelerator at runtime from
-# LITERT_LIBRARY_DIR.
+# on Vulkan on Linux; Metal on macOS). LiteRT loads the accelerator at runtime
+# from LITERT_LIBRARY_DIR.
 set(LITERT_LIBRARY_DIR ${CMAKE_BINARY_DIR}/litert_lib/ai_edge_litert)
-if(NOT EXISTS ${LITERT_LIBRARY_DIR}/libLiteRt.so OR
-   NOT EXISTS ${LITERT_LIBRARY_DIR}/libLiteRtWebGpuAccelerator.so)
+if(NOT EXISTS ${LITERT_LIBRARY_DIR}/${LITERT_LIBRARY} OR
+   NOT EXISTS ${LITERT_LIBRARY_DIR}/${LITERT_GPU_LIBRARY})
   file(DOWNLOAD ${LITERT_WHEEL_URL} ${LITERT_WHEEL}
        EXPECTED_HASH SHA256=${LITERT_WHEEL_SHA256})
   file(ARCHIVE_EXTRACT INPUT ${LITERT_WHEEL}
        DESTINATION ${CMAKE_BINARY_DIR}/litert_lib
-       PATTERNS ai_edge_litert/libLiteRt.so
-                ai_edge_litert/libLiteRtWebGpuAccelerator.so)
+       PATTERNS ai_edge_litert/${LITERT_LIBRARY}
+                ai_edge_litert/${LITERT_GPU_LIBRARY})
 endif()
 
 # LiteRT generates build_config.h at configure time.
@@ -50,7 +60,7 @@ configure_file(
 
 add_library(litert_c SHARED IMPORTED GLOBAL)
 set_target_properties(litert_c PROPERTIES
-  IMPORTED_LOCATION ${LITERT_LIBRARY_DIR}/libLiteRt.so
+  IMPORTED_LOCATION ${LITERT_LIBRARY_DIR}/${LITERT_LIBRARY}
   IMPORTED_NO_SONAME TRUE
   INTERFACE_INCLUDE_DIRECTORIES
     "${litert_SOURCE_DIR};${CMAKE_BINARY_DIR}/litert_generated"
@@ -87,7 +97,16 @@ if(PERCEPTION_BUILD_TESTS)
 endif()
 FetchContent_MakeAvailable(json stb)
 
+# OpenCV 4, as the IOC service: OpenCV 5 changed warpPerspective's results.
+# Homebrew's default OpenCV is 5; prefer its opencv@4.
+if(APPLE AND EXISTS /opt/homebrew/opt/opencv@4)
+  list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/opencv@4)
+endif()
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+if(OpenCV_VERSION VERSION_GREATER_EQUAL 5)
+  message(WARNING "OpenCV ${OpenCV_VERSION}: the crops differ from the IOC "
+                  "service's (OpenCV 4)")
+endif()
 
 # Runs the models with LiteRT; FoundationPose also uses OpenCV for the same
 # image warps as the Python service.
@@ -115,10 +134,15 @@ if(PERCEPTION_BUILD_PYTHON)
   target_link_libraries(litert_pose_estimation PRIVATE perception)
   target_compile_definitions(litert_pose_estimation PRIVATE
     PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR="${LITERT_LIBRARY_DIR}")
-  # Find libLiteRt.so next to the module, or in the build tree.
+  # Find libLiteRt next to the module, or in the build tree.
+  if(APPLE)
+    set(PERCEPTION_ORIGIN "@loader_path")
+  else()
+    set(PERCEPTION_ORIGIN "\$ORIGIN")
+  endif()
   set_target_properties(litert_pose_estimation PROPERTIES
-    BUILD_RPATH "\$ORIGIN;${LITERT_LIBRARY_DIR}"
-    INSTALL_RPATH "$ORIGIN")
+    BUILD_RPATH "${PERCEPTION_ORIGIN};${LITERT_LIBRARY_DIR}"
+    INSTALL_RPATH "${PERCEPTION_ORIGIN}")
 endif()
 
 # Test helpers (images, .npy and JSON files), also used by the ROS 2 node's

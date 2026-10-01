@@ -59,10 +59,14 @@ def _gpu_unavailable_reason():
   return reason
 
 
+_MACOS_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
 def _chrome():
   return os.environ.get("CHROME") or next(
       (shutil.which(c) for c in ("google-chrome", "chromium", "chromium-browser")
-       if shutil.which(c)), None)
+       if shutil.which(c)),
+      _MACOS_CHROME if os.path.exists(_MACOS_CHROME) else None)
 
 
 class _Server:

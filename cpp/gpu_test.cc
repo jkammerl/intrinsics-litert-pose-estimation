@@ -164,7 +164,9 @@ TEST(GpuAccelerator, ScorerGivesTheCpusScores) {
   }
   std::printf("scorer b24: vs CPU %.2e\n", max_diff);
   EXPECT_LT(max_diff, 1e-2);
-  EXPECT_EQ(gpu_best, cpu_best);
+  // The GPU's best candidate is as good as the CPU's. (Several candidates can
+  // tie: the block is symmetric, so poses 180 degrees apart are equivalent.)
+  EXPECT_NEAR(cpu[gpu_best], cpu[cpu_best], 1e-4);
 }
 
 // The scorer for batches of 128 candidates has a 157 MB input tensor

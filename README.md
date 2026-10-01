@@ -25,6 +25,10 @@ recorded inputs (`docs/service_golden.md`).
 
 ## Models
 
+The models and test data are stored with [Git LFS](https://git-lfs.com):
+run `git lfs install && git lfs pull` after cloning, or the files in
+`models/` and `testdata/` are only LFS pointers.
+
 The RF-DETR segmentation model is in `models/`. NVIDIA's FoundationPose
 models are not: their license (see Licenses) doesn't allow distributing them
 stand-alone. Download them from NVIDIA NGC and convert them to TFLite once,
@@ -34,6 +38,13 @@ memory; needs Python 3.12):
 ```bash
 tools/fetch_foundationpose.sh --accept-nvidia-license
 ```
+
+The FoundationPose models get `tools/gpu_compat.py`'s rewrites of ops that
+LiteRT's Metal accelerator computes wrongly (SPLIT, BATCH_MATMUL with
+`adj_x`); the results on the CPU stay the same. On Metal, the scorer for
+batches of 40 (the service's default `batch_size` of 240) still differs from
+the CPU and needs `cpu_fallback`. To rewrite models converted before:
+`cd tools && ../venv/bin/python gpu_compat.py --models=../models`.
 
 The script checks the downloads against the checksums that OMTS pins,
 creates a conversion venv (`venv/`, from `tools/requirements.txt`), and writes
@@ -92,7 +103,8 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Linux x86-64 and arm64 are supported. On 6 arm64 cores, the suite takes
+Linux x86-64 and arm64 and macOS arm64 (GPU accelerator on Metal; OpenCV 4
+from Homebrew's `opencv@4`) are supported. On 6 arm64 cores, the suite takes
 about 2.5 minutes and peaks at about 5 GB of memory, mostly for the scorer's
 batch of 280 candidates.
 

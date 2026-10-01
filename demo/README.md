@@ -52,14 +52,24 @@ offline). For LiteRT's GPU accelerator, give the container a Vulkan driver:
 e.g. `--device /dev/dri` and `--build-arg EXTRA_PACKAGES=mesa-vulkan-drivers`
 for Mesa, or the NVIDIA Container Toolkit.
 
-Without containers: get the FoundationPose models (`tools/fetch_foundationpose.sh
---accept-nvidia-license`, see the top-level README) and build the Python
-module (see `intrinsic/README.md`); the server then only needs NumPy:
+Without containers: get the models (`git lfs pull`, and
+`tools/fetch_foundationpose.sh --accept-nvidia-license`, see the top-level
+README) and build the Python module (needs OpenCV and pybind11; Linux, or
+macOS arm64); the server then only needs NumPy:
 
 ```bash
-PYTHONPATH=<dir with litert_pose_estimation*.so> python3 demo/server.py
+cmake -S cpp -B build -DCMAKE_BUILD_TYPE=Release -DPERCEPTION_BUILD_PYTHON=ON \
+    -DPython3_EXECUTABLE=$(which python3)
+cmake --build build -j
+PYTHONPATH=build python3 demo/server.py
 # open http://localhost:8765
 ```
+
+On macOS, OpenCV comes from Homebrew (`brew install opencv@4 pybind11`; the
+build prefers OpenCV 4, as the service), and LiteRT's GPU accelerator runs
+on Metal. FoundationPose models converted before `tools/gpu_compat.py`
+existed need its rewrites to run on Metal (`cd tools &&
+../venv/bin/python gpu_compat.py --models=../models`).
 
 | Control | |
 | :--- | :--- |
@@ -120,6 +130,6 @@ PYTHONPATH=<dir with litert_pose_estimation*.so>:demo python3 demo/demo_test.py 
   network that the GPU can't run, if any.
 
 The GPU tests need a Vulkan device; a software one (Mesa's llvmpipe) works but
-is slow. They are skipped without one, the browser tests without Chrome
-(`$CHROME` selects the binary). See also `cpp/gpu_test.cc` for the GPU
+is slow. On macOS they run on Metal. They are skipped without a GPU, the
+browser tests without Chrome (`$CHROME` selects the binary). See also `cpp/gpu_test.cc` for the GPU
 accelerator tests of the C++ library.

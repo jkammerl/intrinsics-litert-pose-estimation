@@ -21,6 +21,8 @@ Writes to --out:
                                  280 (e.g. 128 and 24 to score in the chunks
                                  the IOC pose estimator service uses).
 and float16 variants (*_fp16.tflite) with float16 weights, e.g. for GPUs.
+The FoundationPose models get gpu_compat.py's rewrites of ops that GPUs
+compute wrongly.
 
 The FoundationPose networks need a fixed batch size (onnx2tf can't convert
 them with a dynamic batch). The refiner treats candidates independently, so
@@ -40,6 +42,7 @@ import sys
 import tempfile
 
 import extract_rfdetr_core
+import gpu_compat
 
 
 def _onnx2tf(onnx_path, out_dir, extra_args):
@@ -104,8 +107,11 @@ def main():
       copy = os.path.join(tmp, name + ".onnx")
       shutil.copyfile(src, copy)
       f32, f16 = _onnx2tf(copy, os.path.join(tmp, name), extra)
-      shutil.copyfile(f32, os.path.join(args.out, name + ".tflite"))
-      shutil.copyfile(f16, os.path.join(args.out, name + "_fp16.tflite"))
+      for tflite, suffix in ((f32, ""), (f16, "_fp16")):
+        out = os.path.join(args.out, name + suffix + ".tflite")
+        shutil.copyfile(tflite, out)
+        if name.startswith("foundationpose"):
+          gpu_compat.rewrite(out)  # Ops that GPUs compute wrongly.
 
 
 if __name__ == "__main__":
