@@ -173,5 +173,12 @@ version 1.0.0_onnx.
 
 The code, the segmentation model and the CAD model are under the Apache
 License 2.0 ([LICENSE](LICENSE)); `tools/foundationpose_numpy.py` is a port of
-NVIDIA's Apache-2.0 FoundationPose code. The FoundationPose models are under
-the [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
+NVIDIA's Apache-2.0 FoundationPose code. The FoundationPose models
+(`models/foundationpose_*`, converted from version 1.0.0_onnx of
+[FoundationPose on NGC](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/isaac/models/foundationpose))
+are NOT under the Apache License: they are covered by NVIDIA's
+[Deep Learning Models License Agreement](https://developer.download.nvidia.com/licenses/tao_toolkit_21-08_models_eula.pdf),
+which allows distributing them only as part of an application, not as a
+stand-alone product and not under an open-source license. Don't publish this
+repository with them; to share it, remove them and let users convert them
+from NGC (see Regenerating), as OMTS downloads them at build time.
