@@ -25,6 +25,8 @@ from intrinsic.perception.proto.v1 import pose_estimation_service_pb2_grpc
 from intrinsic.resources.proto import runtime_context_pb2
 from intrinsic_perception.intrinsic.perception.service.ioc_pose_estimator.proto import ioc_service_config_pb2
 from intrinsic_perception.intrinsic.perception.service.ioc_pose_estimator.service import ioc_pose_estimator_service
+from intrinsic_perception.intrinsic.perception.service.ioc_pose_estimator.service import pose_estimator_model
+from intrinsic_perception.intrinsic.perception.service.ioc_pose_estimator.service import segmentation_model
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import litert_backend  # pylint: disable=g-import-not-at-top
@@ -49,6 +51,17 @@ def main():
         ioc_service_config_pb2.IocPoseEstimatorServiceConfig.DESCRIPTOR):
       runtime_context.config.Unpack(config)
   logging.info("Service config: %s", text_format.MessageToString(config))
+  # The service requires its two models as dependencies served by the ML
+  # inference service, but LiteRT runs them in-process (install() below
+  # replaces them). Without them, e.g. outside a solution, the service is
+  # constructed with placeholders.
+  for dependency in ("segmentation_model", "foundationpose_model"):
+    if not config.HasField(dependency):
+      getattr(config, dependency).SetInParent()
+  if not config.HasField("inference_service"):
+    logging.info("No ML inference service; LiteRT runs the models.")
+    segmentation_model.SegmentationModel = lambda **unused: None
+    pose_estimator_model.PoseEstimationModel = lambda **unused: None
 
   servicer = ioc_pose_estimator_service.IocPoseEstimatorService(config=config)
   info = litert_backend.install(

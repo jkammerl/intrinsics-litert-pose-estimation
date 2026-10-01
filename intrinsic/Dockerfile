@@ -33,6 +33,11 @@ RUN wget -q https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz \
       -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_TBB=OFF \
       -DWITH_OPENMP=OFF -DWITH_PTHREADS_PF=ON -DWITH_EIGEN=OFF \
       -DWITH_LAPACK=OFF -DBUILD_ZLIB=ON -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DWITH_TIFF=OFF -DWITH_JPEG=OFF -DWITH_PNG=OFF -DWITH_WEBP=OFF \
+      -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF \
+      -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_GTK=OFF \
+      -DWITH_QT=OFF -DWITH_PROTOBUF=OFF -DBUILD_opencv_python3=OFF \
+      -DBUILD_JAVA=OFF -DWITH_ADE=OFF \
     && cmake --build opencv-build -j"$(nproc)" --target install \
     && rm -rf opencv-4.10.0 opencv-build 4.10.0.tar.gz
 COPY cpp /src/cpp
@@ -46,7 +51,8 @@ RUN cmake -S /src/cpp -B /build -DCMAKE_BUILD_TYPE=Release \
     && mkdir -p /litert \
     && cp /build/litert_pose_estimation*.so /litert/ \
     && cp /build/litert_lib/ai_edge_litert/libLiteRt.so \
-          /build/litert_lib/ai_edge_litert/libLiteRtWebGpuAccelerator.so /litert/
+          /build/litert_lib/ai_edge_litert/libLiteRtWebGpuAccelerator.so /litert/ \
+    && cp -L /usr/lib/$(gcc -dumpmachine)/libvulkan.so.1 /litert/
 
 # The service's Bazel bootstrap, pointed at litert_service_main.py.
 FROM ${BASE_IMAGE} AS base
@@ -65,8 +71,13 @@ COPY --from=bootstrap /bootstrap.py /litert/bootstrap.py
 COPY intrinsic/litert_backend.py intrinsic/litert_service_main.py /litert/
 COPY models/rfdetr_seg.tflite models/foundationpose_refine.tflite \
      models/foundationpose_score_b128.tflite models/foundationpose_score_b24.tflite \
+     models/foundationpose_score_b240.tflite models/foundationpose_score_b40.tflite \
      /litert/models/
+# /litert also holds the Vulkan loader for LiteRT's GPU accelerator; the GPU
+# driver's Vulkan ICD comes from the container runtime (e.g. the NVIDIA
+# Container Toolkit with NVIDIA_DRIVER_CAPABILITIES=graphics).
 ENV RUNFILES_DIR=${SERVICE_RUNFILES} \
+    LD_LIBRARY_PATH=/litert \
     LITERT_MODELS_DIR=/litert/models \
     LITERT_ACCELERATOR=auto \
     PYTHONPATH=/litert

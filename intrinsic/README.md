@@ -30,9 +30,19 @@ solution's service). Consequences for the solution:
 
 * The ML inference service and its model server are no longer needed for
   pose estimation. No GPU is required; with one, LiteRT uses it through its
-  WebGPU (Vulkan) accelerator without CUDA, also on non-NVIDIA GPUs.
+  WebGPU (Vulkan) accelerator without CUDA, also on non-NVIDIA GPUs. The
+  image contains the Vulkan loader; the GPU driver's Vulkan ICD comes from
+  the container runtime (e.g. the NVIDIA Container Toolkit with
+  `NVIDIA_DRIVER_CAPABILITIES=graphics`, or `/dev/dri` with the Mesa driver).
+  Without one, the service logs why and runs on the CPU.
 * Environment: `LITERT_ACCELERATOR` (`auto`, `gpu`, `cpu`),
   `LITERT_GPU_FP16`, `LITERT_MODELS_DIR`.
+* The image includes the FoundationPose scorers for the service's
+  `batch_size` 128 (OMTS) and its default of 240. Other batch sizes need their
+  scorers (`tools/convert.py --score_batches`); without them the service
+  fails at startup, naming the missing model.
+* Without an ML inference service in its config (e.g. started with
+  `podman run` outside a solution), the service starts with LiteRT alone.
 * The `ENTRYPOINT` names the service's bundled Python for aarch64
   (`rules_python++python+python_3_11_aarch64-unknown-linux-gnu`); on x86-64,
   replace `aarch64` with `x86_64` (and build on an x86-64 host).
