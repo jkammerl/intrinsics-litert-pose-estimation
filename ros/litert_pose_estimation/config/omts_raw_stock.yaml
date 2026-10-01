@@ -1,0 +1,15 @@
+# OMTS raw stock (2 x 3 x 5 inch) with the IOC pose estimator service's
+# parameters: the estimator is registered with confidence and visibility
+# thresholds of 0.6 and 6 refinement iterations, and OMTS configures the
+# service with a batch size of 128.
+litert_pose_estimation:
+  ros__parameters:
+    object_id: raw_stock_2x3x5
+    accelerator: auto        # auto (GPU, else CPU), gpu or cpu
+    gpu_fp16: false          # float16 on the GPU: faster, less accurate
+    confidence_threshold: 0.6
+    visibility_threshold: 0.6
+    refinement_iterations: 6
+    batch_size: 128
+    continuous: false        # true: estimate every frame; false: ~/estimate
+    sync_slop: 0.1

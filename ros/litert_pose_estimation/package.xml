@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>litert_pose_estimation</name>
+  <version>0.1.0</version>
+  <description>
+    6D pose estimation of the OMTS raw stock workpiece (RF-DETR segmentation
+    and FoundationPose) with Google's LiteRT: on the GPU through LiteRT's GPU
+    accelerator, with an automatic CPU fallback. Follows the logic of
+    Intrinsic's IOC pose estimator service.
+  </description>
+  <maintainer email="julius@kammerl.de">Julius Kammerl</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>message_filters</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>vision_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>libopencv-dev</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
