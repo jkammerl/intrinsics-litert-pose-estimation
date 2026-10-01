@@ -1,11 +1,15 @@
 #include "litert_model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <thread>
 
 #if defined(__linux__)
@@ -27,9 +31,9 @@ namespace {
 void Check(LiteRtStatus status, const char* what) {
   if (status != kLiteRtStatusOk) {
     // LiteRtGetStatusString isn't exported by the prebuilt libLiteRt.so.
-    std::fprintf(stderr, "LiteRT: %s failed with status %d\n", what,
-                 static_cast<int>(status));
-    std::abort();
+    throw std::runtime_error(std::string("LiteRT: ") + what +
+                             " failed with status " +
+                             std::to_string(static_cast<int>(status)));
   }
 }
 
@@ -71,8 +75,7 @@ std::vector<int32_t> ShapeOf(LiteRtTensor tensor, bool* float16) {
   CHECK_LITERT(LiteRtGetRankedTensorType(tensor, &type));
   *float16 = type.element_type == kLiteRtElementTypeFloat16;
   if (!*float16 && type.element_type != kLiteRtElementTypeFloat32) {
-    std::fprintf(stderr, "Only float32 and float16 tensors are supported.\n");
-    std::abort();
+    throw std::runtime_error("Only float32 and float16 tensors are supported.");
   }
   return std::vector<int32_t>(type.layout.dimensions,
                               type.layout.dimensions + type.layout.rank);
@@ -207,9 +210,8 @@ Accelerator ParseAccelerator(const std::string& name) {
   if (name == "auto") return Accelerator::kAuto;
   if (name == "gpu") return Accelerator::kGpu;
   if (name == "cpu") return Accelerator::kCpu;
-  std::fprintf(stderr, "Unknown accelerator \"%s\" (auto, gpu or cpu).\n",
-               name.c_str());
-  std::abort();
+  throw std::invalid_argument("unknown accelerator \"" + name +
+                              "\" (auto, gpu or cpu)");
 }
 
 Model::Model(const std::string& path, const ModelOptions& options) {
@@ -253,10 +255,7 @@ Model::Model(const std::string& path, const ModelOptions& options) {
 
   if (options.accelerator == Accelerator::kCpu) {
     std::string error = Compile(Accelerator::kCpu, options);
-    if (!error.empty()) {
-      std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
-      std::abort();
-    }
+    if (!error.empty()) throw std::runtime_error(path + ": " + error);
     return;
   }
 
@@ -265,38 +264,22 @@ Model::Model(const std::string& path, const ModelOptions& options) {
       !CachedHardwareGpuUnavailableReason().empty()) {
     fallback_reason_ = CachedHardwareGpuUnavailableReason();
     const std::string cpu_error = Compile(Accelerator::kCpu, options);
-    if (!cpu_error.empty()) {
-      std::fprintf(stderr, "%s: %s\n", path.c_str(), cpu_error.c_str());
-      std::abort();
-    }
+    if (!cpu_error.empty()) throw std::runtime_error(path + ": " + cpu_error);
     return;
   }
 
   // Compile for the GPU, then run once: some GPU drivers only fail when the
-  // kernels are first executed.
+  // kernels are first executed, or compute wrong results.
   std::string error = Compile(Accelerator::kGpu, options);
-  if (error.empty()) {
-    std::map<std::string, Tensor> zeros;
-    std::map<std::string, const Tensor*> inputs;
-    for (const std::string& name : input_names_) {
-      zeros[name] = Tensor(shapes_.at(name));
-      inputs[name] = &zeros[name];
-    }
-    std::map<std::string, Tensor> outputs;
-    error = TryRun(inputs, &outputs);
-  }
+  if (error.empty()) error = CheckGpu(path, options);
   if (error.empty()) return;
-  if (options.accelerator == Accelerator::kGpu) {
-    std::fprintf(stderr, "%s: can't run on the GPU: %s\n", path.c_str(),
-                 error.c_str());
-    std::abort();
-  }
-  fallback_reason_ = error;
+  // The model can't run on this GPU (e.g. a tensor exceeds its maximum buffer
+  // size): run it on the CPU.
+  fallback_reason_ = "can't run on this GPU: " + error;
+  std::fprintf(stderr, "%s: %s; using the CPU.\n", path.c_str(),
+               fallback_reason_.c_str());
   error = Compile(Accelerator::kCpu, options);
-  if (!error.empty()) {
-    std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
-    std::abort();
-  }
+  if (!error.empty()) throw std::runtime_error(path + ": " + error);
 }
 
 std::string Model::Compile(Accelerator accelerator,
@@ -368,14 +351,55 @@ std::string Model::Metadata(const std::string& key) const {
   return std::string(static_cast<const char*>(data), size);
 }
 
+std::string Model::CheckGpu(const std::string& path,
+                            const ModelOptions& options) {
+  // Pseudo-random inputs in [-1, 1) (zeros with validate_gpu off).
+  std::map<std::string, Tensor> storage;
+  std::map<std::string, const Tensor*> inputs;
+  uint32_t state = 12345;
+  for (const std::string& name : input_names_) {
+    Tensor& tensor = storage[name] = Tensor(shapes_.at(name));
+    if (!options.validate_gpu) continue;
+    for (size_t i = 0; i < tensor.size(); ++i) {
+      state = state * 1664525u + 1013904223u;
+      tensor[i] = static_cast<float>(state >> 8) * (2.0f / 16777216.0f) - 1.0f;
+    }
+  }
+  for (const auto& [name, tensor] : storage) inputs[name] = &tensor;
+  std::map<std::string, Tensor> gpu;
+  std::string error = TryRun(inputs, &gpu);
+  if (!error.empty() || !options.validate_gpu) return error;
+
+  ModelOptions cpu_options = options;
+  cpu_options.accelerator = Accelerator::kCpu;
+  Model cpu_model(path, cpu_options);
+  const std::map<std::string, Tensor> cpu = cpu_model.Run(inputs);
+  const float tolerance = options.gpu_fp16 ? 5e-2f : 1e-3f;
+  for (const std::string& name : output_names_) {
+    const Tensor &g = gpu.at(name), &c = cpu.at(name);
+    float diff = 0, scale = 0;
+    for (size_t i = 0; i < c.size(); ++i) {
+      diff = std::max(diff, std::abs(g[i] - c[i]));
+      if (std::isnan(g[i])) diff = std::numeric_limits<float>::infinity();
+      scale = std::max(scale, std::abs(c[i]));
+    }
+    if (!(diff <= tolerance * std::max(scale, 1.0f))) {
+      char message[256];
+      std::snprintf(message, sizeof(message),
+                    "GPU results differ from the CPU's (output %s: max "
+                    "difference %.3g for values up to %.3g)",
+                    name.c_str(), diff, scale);
+      return message;
+    }
+  }
+  return "";
+}
+
 std::map<std::string, Tensor> Model::Run(
     const std::map<std::string, const Tensor*>& inputs) {
   std::map<std::string, Tensor> outputs;
   std::string error = TryRun(inputs, &outputs);
-  if (!error.empty()) {
-    std::fprintf(stderr, "LiteRT: %s\n", error.c_str());
-    std::abort();
-  }
+  if (!error.empty()) throw std::runtime_error("LiteRT: " + error);
   return outputs;
 }
 
@@ -405,8 +429,7 @@ std::string Model::TryRun(const std::map<std::string, const Tensor*>& inputs,
   for (const std::string& name : input_names_) {
     const Tensor* tensor = inputs.at(name);
     if (tensor->shape() != shapes_.at(name)) {
-      std::fprintf(stderr, "Wrong shape for input %s.\n", name.c_str());
-      std::abort();
+      throw std::invalid_argument("wrong shape for input " + name);
     }
     auto [buffer, half] =
         make_buffer(name, const_cast<float*>(tensor->data()), tensor->size());

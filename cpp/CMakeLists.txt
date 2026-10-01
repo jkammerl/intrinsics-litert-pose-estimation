@@ -117,7 +117,7 @@ if(PERCEPTION_BUILD_PYTHON)
     PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR="${LITERT_LIBRARY_DIR}")
   # Find libLiteRt.so next to the module, or in the build tree.
   set_target_properties(litert_pose_estimation PROPERTIES
-    BUILD_RPATH "${LITERT_LIBRARY_DIR}"
+    BUILD_RPATH "\$ORIGIN;${LITERT_LIBRARY_DIR}"
     INSTALL_RPATH "$ORIGIN")
 endif()
 
@@ -144,6 +144,7 @@ include(GoogleTest)
 
 add_executable(perception_test
   models_test.cc
+  gpu_test.cc
   rfdetr_test.cc
   service_golden_test.cc
 )

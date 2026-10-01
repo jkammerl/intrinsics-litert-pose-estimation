@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace perception {
 namespace {
@@ -21,8 +22,7 @@ PoseEstimator::PoseEstimator(const std::string& models_dir,
                              const ModelOptions& model_options)
     : config_(config), mesh_(foundationpose::ParseObj(cad_obj)) {
   if (mesh_.vertices.empty()) {
-    std::fprintf(stderr, "The CAD model has no vertices.\n");
-    std::abort();
+    throw std::invalid_argument("The CAD model has no vertices.");
   }
   segmentation_ = std::make_unique<Model>(models_dir + "/rfdetr_seg.tflite",
                                           model_options);

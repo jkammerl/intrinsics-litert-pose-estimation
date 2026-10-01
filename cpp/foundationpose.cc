@@ -4,8 +4,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -481,7 +484,17 @@ Estimator::Estimator(const std::string& models_dir, int batch_size,
         size == 280 ? "foundationpose_score.tflite"
                     : "foundationpose_score_b" + std::to_string(size) +
                           ".tflite";
-    scorers_[size] = std::make_unique<Model>(models_dir + "/" + name, options);
+    const std::string path = models_dir + "/" + name;
+    if (!std::ifstream(path).good()) {
+      // The scorer compares the candidates of a batch with each other, so
+      // each batch size needs its own model.
+      throw std::invalid_argument(
+          "no FoundationPose scorer for batches of " + std::to_string(size) +
+          " candidates (batch size " + std::to_string(batch_size) + "): " +
+          path + "; create it with tools/convert.py --score_batches=" +
+          std::to_string(size));
+    }
+    scorers_[size] = std::make_unique<Model>(path, options);
   }
 }
 
@@ -535,8 +548,8 @@ Result Estimator::Estimate(const RgbdImage& image, const uint8_t* mask,
     const int n = static_cast<int>(chunk.size());
     auto scorer = scorers_.find(n);
     if (scorer == scorers_.end()) {
-      std::fprintf(stderr, "No scorer for a batch of %d candidates.\n", n);
-      std::abort();
+      throw std::runtime_error("no scorer for a batch of " +
+                               std::to_string(n) + " candidates");
     }
     Tensor in1({n, kCropSize, kCropSize, 6}), in2({n, kCropSize, kCropSize, 6});
     builder.Build(chunk, in1, in2);

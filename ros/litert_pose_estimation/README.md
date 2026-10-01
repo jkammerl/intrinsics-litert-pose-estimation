@@ -53,8 +53,8 @@ size) is a `perception::Model` (`cpp/litert_model.h`) that wraps LiteRT's
 
 | `accelerator` | Behavior |
 | :--- | :--- |
-| `auto` (default) | Compile for the GPU (unsupported ops on the CPU) and run once with zero inputs; if either fails, compile for the CPU and log why. |
-| `gpu` | GPU or fail: for checking that a deployment really uses the GPU. |
+| `auto` (default) | If there is a hardware GPU: compile for it (unsupported ops on the CPU), run once on pseudo-random inputs and compare with the CPU; if anything fails or differs, or there is no hardware GPU, use the CPU and log why. |
+| `gpu` | The same, but also on a software GPU (e.g. Mesa's llvmpipe), for testing LiteRT's GPU path anywhere. A network that can't run on the GPU (e.g. a tensor larger than its maximum buffer size, or results that differ from the CPU's) still runs on the CPU, and the startup log says why. |
 | `cpu` | XNNPACK on all CPU cores. |
 
 At startup the node logs where every network runs, e.g.:
@@ -144,7 +144,7 @@ received in OMTS's simulated Lab BB-01 cell (`testdata/service_golden`),
 calls `~/estimate`, and checks the published detection against the service's
 result (translation within 1 mm, rotation within 0.5° modulo the box's
 half-turn symmetries, score within 0.05). Set `PERCEPTION_ACCELERATOR=gpu` to
-require the GPU. The C++ tests in `cpp/` check every stage against the
+run it on the GPU. The C++ tests in `cpp/` check every stage against the
 service (`docs/service_golden.md`).
 
 Results on an arm64 VM (6 cores, no GPU): the node reproduces the service's
