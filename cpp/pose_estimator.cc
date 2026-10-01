@@ -1,8 +1,6 @@
 #include "pose_estimator.h"
 
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <stdexcept>
 
 namespace perception {

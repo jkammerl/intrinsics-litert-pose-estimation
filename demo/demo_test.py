@@ -4,10 +4,12 @@
 
 ServerTest runs the server in-process and sends it requests like the page
 does: the service's recorded capture (testdata/service_golden) must give the
-service's pose on the CPU, and LiteRT's GPU accelerator (WebGPU, on Vulkan)
-must give the CPU's results. BrowserTest opens the page in headless Chrome
-(WebGL through SwiftShader): pose.js's unit tests, and the whole demo from
-the rendered RGB-D frame to the estimate, on the CPU and on the GPU.
+service's pose on the CPU; on LiteRT's GPU accelerator (WebGPU, on Vulkan),
+every network must run on the GPU or the request fail, naming the network
+(without cpu_fallback), and with cpu_fallback the results must be the CPU's.
+BrowserTest opens the page in headless Chrome (WebGL through SwiftShader):
+pose.js's unit tests, and the whole demo from the rendered RGB-D frame to the
+estimate, on the CPU and on the GPU, and the page's error report.
 
 GPU tests run if LiteRT can use a Vulkan device (also a software one such as
 llvmpipe, slowly), browser tests if Chrome is installed (or $CHROME is set).
@@ -25,6 +27,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 
 import cv2
@@ -49,10 +52,10 @@ def _box_symmetric_angle_deg(a, b):
 @functools.cache
 def _gpu_unavailable_reason():
   """Why LiteRT's GPU accelerator can't run here, or None if it can."""
-  info = lpe.Segmenter(os.path.join(ROOT, "models"), accelerator="auto").info()
-  if info["accelerator"] == "gpu" or "software Vulkan" in info["fallback_reason"]:
+  reason = lpe.hardware_gpu_unavailable_reason()
+  if not reason or "software Vulkan" in reason:
     return None
-  return info["fallback_reason"] or "no GPU"
+  return reason
 
 
 def _chrome():
@@ -116,6 +119,12 @@ def _golden_request(**kwargs):
   return case, body
 
 
+def _placements(accelerators):
+  """(network, info) for each network in a response's "accelerators"."""
+  yield "segmentation", accelerators["segmentation"]
+  yield from accelerators["foundationpose"].items()
+
+
 class ServerTest(unittest.TestCase):
 
   def test_serves_the_page_and_the_cad_model(self):
@@ -173,15 +182,36 @@ class ServerTest(unittest.TestCase):
     self.assertEqual(result["accelerators"]["segmentation"]["accelerator"],
                      "cpu")
 
+  def test_webgpu_accelerator_without_cpu_fallback(self):
+    # Every network on the GPU, or an error naming the network that the GPU
+    # can't run (on llvmpipe, the scorers).
+    if _gpu_unavailable_reason():
+      self.skipTest(_gpu_unavailable_reason())
+    _, body = _golden_request(iterations=1, accelerator="gpu")
+    status, result = _server.post("/api/estimate", body)
+    if status == 200:
+      for name, info in _placements(result["accelerators"]):
+        self.assertEqual(info["accelerator"], "gpu", name)
+    else:
+      self.assertEqual(status, 500)
+      self.assertIn("can't run on this GPU", result["error"])
+      self.assertIn("cpu_fallback", result["error"])
+      print("WebGPU without CPU fallback:", result["error"][:300])
+
   def test_webgpu_accelerator_matches_the_cpu(self):
     if _gpu_unavailable_reason():
       self.skipTest(_gpu_unavailable_reason())
     # One refinement iteration: on a software Vulkan device the GPU is slow.
+    # With cpu_fallback, networks that this GPU can't run use the CPU.
     _, body = _golden_request(iterations=1)
     status, cpu = _server.post("/api/estimate", dict(body, accelerator="cpu"))
     self.assertEqual(status, 200, cpu)
-    status, gpu = _server.post("/api/estimate", dict(body, accelerator="gpu"))
+    status, gpu = _server.post(
+        "/api/estimate", dict(body, accelerator="gpu", cpu_fallback=True))
     self.assertEqual(status, 200, gpu)
+    for name, info in _placements(gpu["accelerators"]):
+      if info["accelerator"] == "cpu":
+        self.assertIn("can't run on this GPU", info["fallback_reason"], name)
     accelerators = gpu["accelerators"]
     self.assertEqual(accelerators["segmentation"]["accelerator"], "gpu")
     self.assertEqual(accelerators["foundationpose"]["refiner"]["accelerator"],
@@ -257,10 +287,21 @@ class BrowserTest(unittest.TestCase):
         "/?autorun=1&accelerator=cpu&iterations=3&rest=-0.05,-0.02,110,y", 900)
     self._check_estimate(report, translation_mm=5, rotation_deg=5)
 
-  def test_estimates_with_the_webgpu_accelerator(self):
+  def test_reports_networks_the_gpu_cant_run_without_cpu_fallback(self):
     if _gpu_unavailable_reason():
       self.skipTest(_gpu_unavailable_reason())
     report = self._run_page("/?autorun=1&accelerator=gpu&iterations=1", 1800)
+    if "error" in report:  # This GPU can't run every network.
+      self.assertIn("can't run on this GPU", report["error"])
+      self.assertIn("cpu_fallback", report["error"])
+    else:
+      self._check_estimate(report, translation_mm=5, rotation_deg=10)
+
+  def test_estimates_with_the_webgpu_accelerator(self):
+    if _gpu_unavailable_reason():
+      self.skipTest(_gpu_unavailable_reason())
+    report = self._run_page(
+        "/?autorun=1&accelerator=gpu&cpu_fallback=1&iterations=1", 1800)
     self._check_estimate(report, translation_mm=5, rotation_deg=10)
     self.assertEqual(report["accelerators"]["segmentation"]["accelerator"],
                      "gpu")

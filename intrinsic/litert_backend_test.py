@@ -20,6 +20,7 @@ import litert_backend
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 GOLDEN = os.path.join(ROOT, "testdata", "service_golden")
 ACCELERATOR = os.environ.get("PERCEPTION_ACCELERATOR", "cpu")
+CPU_FALLBACK = os.environ.get("PERCEPTION_CPU_FALLBACK", "0") == "1"
 
 
 def _box_symmetric_angle_deg(a, b):
@@ -47,7 +48,8 @@ class LiteRtBackendTest(unittest.TestCase):
         _batch_size=cls.case["config"]["batch_size"],
         segmentation_model=None, pose_estimator_model=None)
     cls.info = litert_backend.install(
-        cls.servicer, os.path.join(ROOT, "models"), accelerator=ACCELERATOR)
+        cls.servicer, os.path.join(ROOT, "models"), accelerator=ACCELERATOR,
+        cpu_fallback=CPU_FALLBACK)
 
   def test_reports_accelerators(self):
     self.assertIn(self.info["segmentation"]["accelerator"], ("cpu", "gpu"))

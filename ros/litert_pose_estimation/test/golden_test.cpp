@@ -34,11 +34,14 @@ class GoldenTest : public ::testing::Test {
 TEST_F(GoldenTest, NodeReproducesTheIocPoseEstimatorService) {
   const nlohmann::json golden = pt::LoadJson(Golden("case.json"));
   const char* accelerator = std::getenv("PERCEPTION_ACCELERATOR");
+  const char* cpu_fallback = std::getenv("PERCEPTION_CPU_FALLBACK");
   rclcpp::NodeOptions options;
   options.parameter_overrides({
       {"models_dir", std::string(PERCEPTION_SOURCE_ROOT) + "/models"},
       {"cad_obj", Golden(golden["cad_obj"])},
       {"accelerator", std::string(accelerator ? accelerator : "auto")},
+      {"cpu_fallback", cpu_fallback != nullptr &&
+                           std::string(cpu_fallback) == "1"},
       {"litert_library_dir", std::string(LITERT_LIBRARY_DIR)},
       {"confidence_threshold",
        golden["config"]["confidence_threshold"].get<double>()},

@@ -148,11 +148,8 @@ Tensor::Tensor(std::vector<int32_t> shape)
   std::memset(data_.get(), 0, bytes);
 }
 
-// Returns "" if a hardware GPU is available to LiteRT's GPU accelerator,
-// else why not. On Linux, the accelerator runs on WebGPU over Vulkan; a
-// software Vulkan device (e.g. Mesa's llvmpipe) emulates the GPU on the CPU
-// and is slower than LiteRT's XNNPACK CPU path, so `auto` doesn't use it.
-static std::string HardwareGpuUnavailableReason() {
+// See HardwareGpuUnavailableReason().
+static std::string ProbeHardwareGpu() {
 #if defined(__linux__)
   void* lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
   if (lib == nullptr) return "no Vulkan loader (libvulkan.so.1)";
@@ -200,9 +197,8 @@ static std::string HardwareGpuUnavailableReason() {
 #endif
 }
 
-static const std::string& CachedHardwareGpuUnavailableReason() {
-  static const std::string* reason =
-      new std::string(HardwareGpuUnavailableReason());
+const std::string& HardwareGpuUnavailableReason() {
+  static const std::string* reason = new std::string(ProbeHardwareGpu());
   return *reason;
 }
 
@@ -215,6 +211,15 @@ Accelerator ParseAccelerator(const std::string& name) {
 }
 
 Model::Model(const std::string& path, const ModelOptions& options) {
+  try {
+    Init(path, options);
+  } catch (...) {
+    Release();  // The destructor doesn't run if the constructor throws.
+    throw;
+  }
+}
+
+void Model::Init(const std::string& path, const ModelOptions& options) {
   std::vector<LiteRtEnvOption> env_options;
   if (!options.runtime_library_dir.empty()) {
     LiteRtEnvOption option;
@@ -261,8 +266,8 @@ Model::Model(const std::string& path, const ModelOptions& options) {
 
   // In auto mode, use the GPU only if there is a hardware GPU.
   if (options.accelerator == Accelerator::kAuto &&
-      !CachedHardwareGpuUnavailableReason().empty()) {
-    fallback_reason_ = CachedHardwareGpuUnavailableReason();
+      !HardwareGpuUnavailableReason().empty()) {
+    fallback_reason_ = HardwareGpuUnavailableReason();
     const std::string cpu_error = Compile(Accelerator::kCpu, options);
     if (!cpu_error.empty()) throw std::runtime_error(path + ": " + cpu_error);
     return;
@@ -274,7 +279,13 @@ Model::Model(const std::string& path, const ModelOptions& options) {
   if (error.empty()) error = CheckGpu(path, options);
   if (error.empty()) return;
   // The model can't run on this GPU (e.g. a tensor exceeds its maximum buffer
-  // size): run it on the CPU.
+  // size, or the GPU computes it wrongly): an error, unless cpu_fallback
+  // allows running it on the CPU.
+  if (!options.cpu_fallback) {
+    throw std::runtime_error(
+        path + ": can't run on this GPU: " + error +
+        " (set cpu_fallback to run it on the CPU instead)");
+  }
   fallback_reason_ = "can't run on this GPU: " + error;
   std::fprintf(stderr, "%s: %s; using the CPU.\n", path.c_str(),
                fallback_reason_.c_str());
@@ -331,10 +342,15 @@ std::string Model::Compile(Accelerator accelerator,
   return "";
 }
 
-Model::~Model() {
-  LiteRtDestroyCompiledModel(compiled_);
-  LiteRtDestroyModel(model_);
-  LiteRtDestroyEnvironment(env_);
+Model::~Model() { Release(); }
+
+void Model::Release() {
+  if (compiled_ != nullptr) LiteRtDestroyCompiledModel(compiled_);
+  if (model_ != nullptr) LiteRtDestroyModel(model_);
+  if (env_ != nullptr) LiteRtDestroyEnvironment(env_);
+  compiled_ = nullptr;
+  model_ = nullptr;
+  env_ = nullptr;
 }
 
 const std::vector<int32_t>& Model::shape(const std::string& name) const {
@@ -425,12 +441,19 @@ std::string Model::TryRun(const std::map<std::string, const Tensor*>& inputs,
                                                                  : nullptr));
   };
 
-  std::vector<LiteRtTensorBuffer> input_buffers, output_buffers;
   for (const std::string& name : input_names_) {
-    const Tensor* tensor = inputs.at(name);
-    if (tensor->shape() != shapes_.at(name)) {
+    if (inputs.at(name)->shape() != shapes_.at(name)) {
       throw std::invalid_argument("wrong shape for input " + name);
     }
+  }
+  // Destroys the tensor buffers, also if creating one of them throws.
+  struct Buffers : std::vector<LiteRtTensorBuffer> {
+    ~Buffers() {
+      for (LiteRtTensorBuffer buffer : *this) LiteRtDestroyTensorBuffer(buffer);
+    }
+  } input_buffers, output_buffers;
+  for (const std::string& name : input_names_) {
+    const Tensor* tensor = inputs.at(name);
     auto [buffer, half] =
         make_buffer(name, const_cast<float*>(tensor->data()), tensor->size());
     if (half != nullptr) {
@@ -457,12 +480,6 @@ std::string Model::TryRun(const std::map<std::string, const Tensor*>& inputs,
     for (size_t i = 0; i < tensor->size(); ++i) {
       (*tensor)[i] = HalfToFloat(half[i]);
     }
-  }
-  for (LiteRtTensorBuffer buffer : input_buffers) {
-    LiteRtDestroyTensorBuffer(buffer);
-  }
-  for (LiteRtTensorBuffer buffer : output_buffers) {
-    LiteRtDestroyTensorBuffer(buffer);
   }
   if (error.empty()) *outputs_out = std::move(outputs);
   return error;

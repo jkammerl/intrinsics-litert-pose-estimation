@@ -14,6 +14,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -22,9 +23,10 @@ def generate_launch_description():
   return LaunchDescription([
       DeclareLaunchArgument(
           "perception_root",
-          description="Checkout of the litert/perception branch (models/, "
-          "assets/)."),
+          description="Checkout of intrinsics-litert-pose-estimation "
+          "(models/, assets/)."),
       DeclareLaunchArgument("accelerator", default_value="auto"),
+      DeclareLaunchArgument("cpu_fallback", default_value="false"),
       DeclareLaunchArgument("rgb", default_value="rgb/image_raw"),
       DeclareLaunchArgument("depth", default_value="depth/image_raw"),
       DeclareLaunchArgument("camera_info", default_value="rgb/camera_info"),
@@ -41,6 +43,8 @@ def generate_launch_description():
                       [root, "assets", "raw_stock_2x3x5",
                        "raw_stock_2x3x5.obj"]),
                   "accelerator": LaunchConfiguration("accelerator"),
+                  "cpu_fallback": ParameterValue(
+                      LaunchConfiguration("cpu_fallback"), value_type=bool),
               },
           ],
           remappings=[

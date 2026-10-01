@@ -28,10 +28,10 @@ framework runtime:
   works on NVIDIA, AMD, Intel, Arm Mali, Qualcomm Adreno and Apple GPUs, not
   only CUDA devices. NPUs (e.g. Qualcomm, MediaTek, Google Tensor) are
   supported through vendor dispatch libraries.
-* **Graceful fallback, op by op.** Ops the GPU accelerator doesn't support
-  run on the CPU in the same model, and if the GPU can't be used at all, this
-  node recompiles for the CPU (see below). The same binary therefore runs on
-  a laptop without a GPU, on a Jetson, or on a robot's embedded board.
+* **Mixed GPU/CPU execution, op by op.** Ops the GPU accelerator doesn't
+  support run on the CPU in the same model. With `accelerator: auto`, the same
+  binary runs on a laptop without a GPU, on a Jetson, or on a robot's
+  embedded board (see below).
 * **Fast CPU inference.** On the CPU, LiteRT uses **XNNPACK**, highly
   optimized kernels for Arm NEON/SVE and x86 AVX, multi-threaded.
 * **Small and self-contained.** The runtime is a single ~6 MB shared library
@@ -53,9 +53,16 @@ size) is a `perception::Model` (`cpp/litert_model.h`) that wraps LiteRT's
 
 | `accelerator` | Behavior |
 | :--- | :--- |
-| `auto` (default) | If there is a hardware GPU: compile for it (unsupported ops on the CPU), run once on pseudo-random inputs and compare with the CPU; if anything fails or differs, or there is no hardware GPU, use the CPU and log why. |
-| `gpu` | The same, but also on a software GPU (e.g. Mesa's llvmpipe), for testing LiteRT's GPU path anywhere. A network that can't run on the GPU (e.g. a tensor larger than its maximum buffer size, or results that differ from the CPU's) still runs on the CPU, and the startup log says why. |
+| `auto` (default) | The GPU if there is a hardware GPU, else the CPU (the startup log says why). |
+| `gpu` | The GPU, also a software one (e.g. Mesa's llvmpipe), for testing LiteRT's GPU path anywhere. |
 | `cpu` | XNNPACK on all CPU cores. |
+
+On the GPU, each network is compiled (unsupported ops on the CPU), run once
+on pseudo-random inputs and compared with the CPU. A network that fails to
+compile or run, or computes other results than the CPU (e.g. a tensor larger
+than the GPU's maximum buffer size, or a driver bug), stops the node at
+startup with the reason, unless `cpu_fallback: true`: then that network runs
+on the CPU and the startup log says why.
 
 At startup the node logs where every network runs, e.g.:
 
@@ -102,6 +109,7 @@ its CPU rasterizer.
 
 Parameters (defaults in `config/omts_raw_stock.yaml`): `models_dir`,
 `cad_obj` (OBJ in meters), `object_id`, `accelerator`, `gpu_fp16`,
+`cpu_fallback`,
 `confidence_threshold`, `visibility_threshold`, `refinement_iterations`,
 `batch_size`, `continuous` (estimate every frame instead of on `~/estimate`),
 `sync_slop`, `queue_size`, `litert_library_dir`.
@@ -144,13 +152,16 @@ received in OMTS's simulated Lab BB-01 cell (`testdata/service_golden`),
 calls `~/estimate`, and checks the published detection against the service's
 result (translation within 1 mm, rotation within 0.5° modulo the box's
 half-turn symmetries, score within 0.05). Set `PERCEPTION_ACCELERATOR=gpu` to
-run it on the GPU. The C++ tests in `cpp/` check every stage against the
+run it on the GPU (and `PERCEPTION_CPU_FALLBACK=1` to allow networks that the
+GPU can't run on the CPU). The C++ tests in `cpp/` check every stage against the
 service (`docs/service_golden.md`).
 
 Results on an arm64 VM (6 cores, no GPU): the node reproduces the service's
 pose exactly (0.000 mm, 0.000° modulo symmetry, identical score); RF-DETR
 takes 0.5 s and FoundationPose 164 s on the CPU, similar to the service's
-ONNX Runtime CPU path. This machine has no GPU: LiteRT's WebGPU accelerator
-finds Mesa's software Vulkan device (llvmpipe), compiles the models for it
-and fails when running the kernels, so `auto` falls back to the CPU as
-designed; GPU timings remain to be measured on GPU hardware.
+ONNX Runtime CPU path. This machine has no GPU, only Mesa's software Vulkan
+device (llvmpipe), so `auto` uses the CPU. With `accelerator: gpu`, RF-DETR
+and the refiner run on llvmpipe and match the CPU, but the scorers can't:
+the batch-128 scorer exceeds the maximum buffer size and llvmpipe computes the
+batch-24 scorer wrongly, so the node needs `cpu_fallback: true` there. GPU
+timings remain to be measured on GPU hardware.

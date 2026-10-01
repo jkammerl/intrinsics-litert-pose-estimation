@@ -1,6 +1,6 @@
 // Runs a TFLite model with LiteRT's C API: on the GPU (LiteRT's ML Drift GPU
 // accelerator, through WebGPU/Vulkan, OpenCL or Metal depending on the
-// platform), with an automatic fallback to the CPU (XNNPACK).
+// platform) or on the CPU (XNNPACK); see Accelerator and ModelOptions.
 
 #ifndef PERCEPTION_LITERT_LITERT_MODEL_H_
 #define PERCEPTION_LITERT_LITERT_MODEL_H_
@@ -41,13 +41,14 @@ class Tensor {
 
 // Hardware that LiteRT runs a model on.
 enum class Accelerator {
-  // The GPU if there is a hardware GPU and LiteRT can compile and run the
-  // model there, else the CPU.
+  // The GPU if there is a hardware GPU, else the CPU (fallback_reason() says
+  // why). On the GPU, as kGpu.
   kAuto,
   // The GPU, also a software one (e.g. Mesa's llvmpipe Vulkan device, useful
-  // for testing). Ops the GPU accelerator doesn't support run on the CPU; a
-  // model that can't run on this GPU at all (e.g. a tensor exceeds its
-  // maximum buffer size) runs on the CPU, and fallback_reason() says why.
+  // for testing). Ops the GPU accelerator doesn't support run on the CPU. A
+  // model that can't run on this GPU at all (it fails to compile or run, e.g.
+  // a tensor exceeds the maximum buffer size, or computes other results than
+  // the CPU) is an error, unless ModelOptions::cpu_fallback is set.
   kGpu,
   // The CPU only (XNNPACK).
   kCpu,
@@ -55,6 +56,13 @@ enum class Accelerator {
 
 // Parses "auto", "gpu" or "cpu"; throws std::invalid_argument otherwise.
 Accelerator ParseAccelerator(const std::string& name);
+
+// Returns "" if a hardware GPU is available to LiteRT's GPU accelerator, else
+// why not (probed once). On Linux, the accelerator runs on WebGPU over Vulkan;
+// a software Vulkan device (e.g. Mesa's llvmpipe) emulates the GPU on the CPU
+// and is slower than LiteRT's XNNPACK CPU path, so kAuto doesn't use it (the
+// reason then names it as "only software Vulkan devices").
+const std::string& HardwareGpuUnavailableReason();
 
 struct ModelOptions {
   Accelerator accelerator = Accelerator::kCpu;
@@ -71,6 +79,9 @@ struct ModelOptions {
   // the outputs differ (relative tolerance 1e-3, 5e-2 with gpu_fp16). Some
   // GPU drivers compile and run models that they then compute wrongly.
   bool validate_gpu = true;
+  // If the GPU can't run the model (see Accelerator::kGpu), run it on the CPU
+  // instead of failing; fallback_reason() says why.
+  bool cpu_fallback = false;
 };
 
 // A model with a single signature and float32 or float16 inputs and outputs.
@@ -80,11 +91,11 @@ class Model {
   // Loads and compiles the model for the CPU; throws std::runtime_error on
   // failure.
   explicit Model(const std::string& path) : Model(path, ModelOptions()) {}
-  // Loads and compiles the model for `options.accelerator`. With kAuto, the
-  // model is compiled for the GPU and run once (see validate_gpu); if that
-  // fails, it is compiled for the CPU instead and fallback_reason() says why.
-  // kGpu does the same, also on a software GPU. Throws std::runtime_error if
-  // the model can't be compiled at all.
+  // Loads and compiles the model for `options.accelerator`. On the GPU, the
+  // model is compiled and run once (see validate_gpu); if that fails, it is
+  // compiled for the CPU with options.cpu_fallback (fallback_reason() says
+  // why), else std::runtime_error is thrown, as when the model can't be
+  // compiled at all.
   Model(const std::string& path, const ModelOptions& options);
   ~Model();
   Model(const Model&) = delete;
@@ -113,10 +124,14 @@ class Model {
   // Whether every op runs on the selected accelerator (on the GPU, ops it
   // doesn't support run on the CPU).
   bool fully_accelerated() const { return fully_accelerated_; }
-  // Why kAuto or kGpu fell back to the CPU, or "" if it didn't.
+  // Why the model runs on the CPU although kAuto or kGpu was requested, or
+  // "" if it doesn't.
   const std::string& fallback_reason() const { return fallback_reason_; }
 
  private:
+  void Init(const std::string& path, const ModelOptions& options);
+  // Destroys the LiteRT objects.
+  void Release();
   // Compiles the model for `accelerator`; returns an error message, or "".
   std::string Compile(Accelerator accelerator, const ModelOptions& options);
   // Runs the model; returns an error message, or "".

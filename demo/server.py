@@ -13,9 +13,13 @@ POST /api/estimate with JSON:
    "depth": base64 of W*H float32 (meters; 0 where nothing is hit),
    "camera_matrix": [[fx, 0, cx], [0, fy, cy], [0, 0, 1]],
    "accelerator": "auto" | "gpu" | "cpu",
+   "cpu_fallback": run networks the GPU can't run on the CPU (default false;
+                   else such a network is an error),
    "iterations": FoundationPose refinement iterations (default 6)}
 returns detections (box, score, visibility, pose, pose score), timings in
-milliseconds and where each network ran.
+milliseconds and where each network ran; or {"error": ...} with status 400
+for a bad request and 500 if the pipeline fails (e.g. a network that the GPU
+can't run, without cpu_fallback).
 """
 
 import argparse
@@ -33,11 +37,18 @@ import litert_pose_estimation as lpe
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+# The CAD model as the IOC service receives it from the pose estimator asset
+# (trimesh's OBJ export), so that the estimates match the service's.
 CAD_OBJ = os.path.join(ROOT, "testdata", "service_golden", "raw_stock_2x3x5.obj")
 
 
 class Pipeline:
-  """The LiteRT networks, compiled once per accelerator setting."""
+  """The LiteRT networks, compiled once per accelerator setting.
+
+  Compilation errors (e.g. a network that the GPU can't run, without
+  cpu_fallback) are raised by estimate() and not cached, so each request
+  reports them.
+  """
 
   def __init__(self, models_dir, batch_size=128):
     self._models_dir = models_dir
@@ -49,25 +60,30 @@ class Pipeline:
     with open(CAD_OBJ) as f:
       self.cad_obj = f.read()
 
-  def models(self, accelerator):
+  def models(self, accelerator, cpu_fallback):
+    """The networks for these settings, and the milliseconds spent compiling
+    them in this call (0 if they were compiled before)."""
     if accelerator not in ("auto", "gpu", "cpu"):
       raise ValueError(f"unknown accelerator {accelerator!r}")
-    if accelerator not in self._models:
-      start = time.perf_counter()
-      segmenter = lpe.Segmenter(self._models_dir, accelerator=accelerator)
-      foundationpose = lpe.FoundationPose(
-          self._models_dir, batch_size=self._batch_size,
-          accelerator=accelerator)
-      self._models[accelerator] = (segmenter, foundationpose,
-                                   (time.perf_counter() - start) * 1000)
-    return self._models[accelerator]
+    key = (accelerator, cpu_fallback)
+    if key in self._models:
+      return (*self._models[key], 0.0)
+    start = time.perf_counter()
+    segmenter = lpe.Segmenter(self._models_dir, accelerator=accelerator,
+                              cpu_fallback=cpu_fallback)
+    foundationpose = lpe.FoundationPose(
+        self._models_dir, batch_size=self._batch_size,
+        accelerator=accelerator, cpu_fallback=cpu_fallback)
+    self._models[key] = (segmenter, foundationpose)
+    return segmenter, foundationpose, (time.perf_counter() - start) * 1000
 
   def estimate(self, rgb, depth, camera_matrix, accelerator="auto",
-               iterations=6, confidence_threshold=0.6,
+               cpu_fallback=False, iterations=6, confidence_threshold=0.6,
                visibility_threshold=0.6):
     """Runs the service's pipeline; returns a JSON-serializable dict."""
     with self._lock:  # One estimation at a time.
-      segmenter, foundationpose, compile_ms = self.models(accelerator)
+      segmenter, foundationpose, compile_ms = self.models(
+          accelerator, cpu_fallback)
       t0 = time.perf_counter()
       boxes, scores, masks, visibility = segmenter.segment(
           rgb, confidence_threshold, visibility_threshold)
@@ -106,8 +122,8 @@ class Pipeline:
             "segmentation": segmenter.info(),
             "foundationpose": foundationpose.info(),
         },
-        "config": {"accelerator": accelerator, "iterations": iterations,
-                   "batch_size": self._batch_size},
+        "config": {"accelerator": accelerator, "cpu_fallback": cpu_fallback,
+                   "iterations": iterations, "batch_size": self._batch_size},
     }
 
 
@@ -162,11 +178,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         np.save(os.path.join(self.pipeline.save_dir, "depth.npy"), depth)
       result = self.pipeline.estimate(
           rgb, depth, k, accelerator=body.get("accelerator", "auto"),
+          cpu_fallback=bool(body.get("cpu_fallback", False)),
           iterations=int(body.get("iterations", 6)))
       result["timings_ms"]["decode"] = decode_ms
       self._send_json(result, 200)
-    except Exception as e:  # pylint: disable=broad-except
+    except (ValueError, KeyError, TypeError) as e:  # Includes JSON errors.
       self._send_json({"error": str(e)}, 400)
+    except Exception as e:  # pylint: disable=broad-except
+      self._send_json({"error": str(e)}, 500)
 
   def _send_json(self, value, status):
     payload = json.dumps(value).encode()
@@ -183,6 +202,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def main():
   parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument("--host", default="127.0.0.1",
+                      help="address to listen on (0.0.0.0 for all)")
   parser.add_argument("--port", type=int, default=8765)
   parser.add_argument("--models_dir", default=os.path.join(ROOT, "models"))
   parser.add_argument("--batch_size", type=int, default=128)
@@ -192,8 +213,8 @@ def main():
   pipeline = Pipeline(args.models_dir, args.batch_size)
   pipeline.save_dir = args.save_dir
   server = http.server.ThreadingHTTPServer(
-      ("", args.port), functools.partial(Handler, pipeline=pipeline))
-  print(f"Serving http://localhost:{args.port}")
+      (args.host, args.port), functools.partial(Handler, pipeline=pipeline))
+  print(f"Serving http://{args.host}:{args.port}")
   server.serve_forever()
 
 

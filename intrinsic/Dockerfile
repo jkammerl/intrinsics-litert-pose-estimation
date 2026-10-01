@@ -16,7 +16,6 @@
 # a minimal static OpenCV (core, imgproc) so that it needs no extra libraries.
 
 ARG BASE_IMAGE
-ARG PYTHON_RUNTIME=rules_python++python+python_3_11_aarch64-unknown-linux-gnu
 ARG SERVICE_RUNFILES=/intrinsic_perception/intrinsic/perception/service/ioc_pose_estimator/ioc_service_main.runfiles
 
 FROM docker.io/library/python:3.11-slim-trixie AS build
@@ -64,7 +63,6 @@ s=re.sub(r'^MAIN_PATH = .*$', 'MAIN_PATH = \"/litert/litert_service_main.py\"', 
 open(p, 'w').write(s)"
 
 FROM ${BASE_IMAGE}
-ARG PYTHON_RUNTIME
 ARG SERVICE_RUNFILES
 COPY --from=build /litert/ /litert/
 COPY --from=bootstrap /bootstrap.py /litert/bootstrap.py
@@ -80,5 +78,6 @@ ENV RUNFILES_DIR=${SERVICE_RUNFILES} \
     LD_LIBRARY_PATH=/litert \
     LITERT_MODELS_DIR=/litert/models \
     LITERT_ACCELERATOR=auto \
+    LITERT_CPU_FALLBACK=0 \
     PYTHONPATH=/litert
 ENTRYPOINT ["/intrinsic_perception/intrinsic/perception/service/ioc_pose_estimator/ioc_service_main.runfiles/rules_python++python+python_3_11_aarch64-unknown-linux-gnu/bin/python3", "/litert/bootstrap.py"]

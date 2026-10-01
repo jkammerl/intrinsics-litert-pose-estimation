@@ -146,6 +146,7 @@ PoseEstimationNode::PoseEstimationNode(const rclcpp::NodeOptions& options)
   model_options.accelerator = perception::ParseAccelerator(
       declare_parameter<std::string>("accelerator", "auto"));
   model_options.gpu_fp16 = declare_parameter<bool>("gpu_fp16", false);
+  model_options.cpu_fallback = declare_parameter<bool>("cpu_fallback", false);
   model_options.runtime_library_dir = declare_parameter<std::string>(
       "litert_library_dir", PERCEPTION_LITERT_LIBRARY_DIR);
 

@@ -17,7 +17,7 @@ outputs, so that everything else in the service stays unchanged:
 
 The service then no longer needs the ML inference service (nor a GPU-only
 Triton or ONNX Runtime server): LiteRT runs the networks in-process, on the
-GPU through its WebGPU/OpenCL accelerator or on the CPU.
+GPU through its WebGPU (Vulkan) accelerator or on the CPU.
 """
 
 import os
@@ -102,17 +102,21 @@ class LiteRtPoseEstimationModel:
 
 
 def install(servicer: Any, models_dir: str, accelerator: str = "auto",
-            batch_size: int | None = None, gpu_fp16: bool = False):
+            batch_size: int | None = None, gpu_fp16: bool = False,
+            cpu_fallback: bool = False):
   """Replaces the servicer's two inference calls with LiteRT.
 
   Args:
     servicer: An IocPoseEstimatorService.
     models_dir: Directory with rfdetr_seg.tflite and the FoundationPose models
       (foundationpose_refine.tflite, foundationpose_score_b<N>.tflite).
-    accelerator: "auto" (GPU, else CPU), "gpu" or "cpu".
+    accelerator: "auto" (hardware GPU, else CPU), "gpu" (also a software GPU)
+      or "cpu".
     batch_size: FoundationPose chunk size; defaults to the service's
       configured batch size, so that the scores match the service's.
     gpu_fp16: Run on the GPU in float16 (faster, less accurate).
+    cpu_fallback: Run networks that the GPU can't run (or computes other
+      results for than the CPU) on the CPU; else that is an error.
 
   Returns:
     A dict describing where each network runs.
@@ -127,10 +131,11 @@ def install(servicer: Any, models_dir: str, accelerator: str = "auto",
     library_dir = litert_pose_estimation.DEFAULT_LITERT_LIBRARY_DIR
   segmenter = litert_pose_estimation.Segmenter(
       models_dir, accelerator=accelerator, gpu_fp16=gpu_fp16,
-      litert_library_dir=library_dir)
+      cpu_fallback=cpu_fallback, litert_library_dir=library_dir)
   foundationpose = litert_pose_estimation.FoundationPose(
       models_dir, batch_size=batch_size, accelerator=accelerator,
-      gpu_fp16=gpu_fp16, litert_library_dir=library_dir)
+      gpu_fp16=gpu_fp16, cpu_fallback=cpu_fallback,
+      litert_library_dir=library_dir)
   servicer.segmentation_model = LiteRtSegmentationModel(
       segmenter, getattr(servicer, "segmentation_model", None))
   servicer.pose_estimator_model = LiteRtPoseEstimationModel(

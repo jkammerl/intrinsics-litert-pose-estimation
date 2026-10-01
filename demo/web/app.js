@@ -181,6 +181,10 @@ function boxPose() {
 
 function fmt(v, digits = 1) { return v.toFixed(digits); }
 
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
 function updateGroundTruth() {
   const pose = boxPose();
   const t = P.translationOf(pose).map((v) => v * 1000);
@@ -313,6 +317,7 @@ async function runEstimate() {
     width: W, height: H, camera_matrix: K,
     rgb: P.toBase64(frame.rgb), depth: P.toBase64(frame.depth),
     accelerator: $('accelerator').value,
+    cpu_fallback: $('cpu-fallback').checked,
     iterations: Number($('iterations').value),
   });
   const encodeMs = performance.now() - t0;
@@ -336,7 +341,7 @@ async function runEstimate() {
   const roundTripMs = performance.now() - t0 - encodeMs;
   result.client_ms = { capture: frame.ms, encode: encodeMs, round_trip: roundTripMs };
   lastFrame = frame; lastResult = result;
-  show(result, truth, frame);
+  show(result, truth);
   button.disabled = false;
 }
 
@@ -346,11 +351,11 @@ function setStatus(text, error = false) {
 }
 
 function best(result) {
-  // The detection with the highest pose score, as OMTS's skill picks it.
+  // The detection with the highest pose score.
   return result.detections.reduce((a, b) => (b.pose_score > a.pose_score ? b : a), result.detections[0]);
 }
 
-function show(result, truth, frame) {
+function show(result, truth) {
   $('results').hidden = false;
   const det = result.detections.length ? best(result) : null;
   if (!det) {
@@ -457,22 +462,26 @@ const LATENCY = [
   ['capture', 'Render RGB-D (browser)', '--c-capture', (r) => r.client_ms.capture],
   ['encode', 'Encode request (browser)', '--c-encode', (r) => r.client_ms.encode],
   ['transfer', 'Transfer and HTTP', '--c-transfer',
-   (r) => r.client_ms.round_trip - r.timings_ms.total - r.timings_ms.decode],
+   (r) => r.client_ms.round_trip - r.timings_ms.decode -
+          r.timings_ms.model_compilation - r.timings_ms.total],
+  ['compile', 'Model compilation (first request per setting)', '--c-compile',
+   (r) => r.timings_ms.model_compilation],
   ['decode', 'Decode request (server)', '--c-decode', (r) => r.timings_ms.decode],
   ['seg', 'Segmentation, RF-DETR (LiteRT)', '--c-seg', (r) => r.timings_ms.segmentation],
   ['pose', 'Pose estimation, FoundationPose (LiteRT)', '--c-pose', (r) => r.timings_ms.pose_estimation],
 ];
 
 function showLatency(r) {
-  const values = LATENCY.map(([, , , f]) => Math.max(0, f(r)));
+  // Model compilation only in the first request with these settings.
+  const rows = LATENCY.filter(([id]) => id !== 'compile' || r.timings_ms.model_compilation > 0);
+  const values = rows.map(([, , , f]) => Math.max(0, f(r)));
   const total = values.reduce((a, b) => a + b, 0);
-  $('latency-bar').innerHTML = LATENCY.map(([, label, color], i) =>
+  $('latency-bar').innerHTML = rows.map(([, label, color], i) =>
     `<div title="${label}" style="width:${(100 * values[i] / total).toFixed(2)}%;background:var(${color})"></div>`).join('');
   const ms = (v) => (v >= 1000 ? `${(v / 1000).toFixed(2)} s` : `${v.toFixed(1)} ms`);
-  $('latency').innerHTML = LATENCY.map(([, label, color], i) =>
+  $('latency').innerHTML = rows.map(([, label, color], i) =>
     `<tr><td><span class="swatch" style="background:var(${color})"></span>${label}</td><td>${ms(values[i])}</td></tr>`).join('') +
-    `<tr><th>End to end</th><th>${ms(total)}</th></tr>` +
-    `<tr><td>Model compilation (once per accelerator setting)</td><td>${ms(r.timings_ms.model_compilation)}</td></tr>`;
+    `<tr><th>End to end</th><th>${ms(total)}</th></tr>`;
 }
 
 function showAccelerators(r) {
@@ -480,8 +489,9 @@ function showAccelerators(r) {
       .map(([k, v]) => [`FoundationPose ${k.replace('_', ' ')}`, v])];
   $('accel').innerHTML = rows.map(([name, a]) =>
     `<div><b>${name}</b>${a.accelerator === 'gpu' ? 'GPU (WebGPU accelerator' + (a.fully_accelerated ? ', fully delegated)' : ', partially delegated)') : 'CPU (XNNPACK)'}` +
-    (a.fallback_reason ? `<br><span>${a.fallback_reason}</span>` : '') + '</div>').join('') +
-    `<span>${r.config.iterations} refinement iteration(s), scorer batch ${r.config.batch_size}.</span>`;
+    (a.fallback_reason ? `<br><span>${escapeHtml(a.fallback_reason)}</span>` : '') + '</div>').join('') +
+    `<span>${r.config.iterations} refinement iteration(s), scorer batch ${r.config.batch_size}, ` +
+    `CPU fallback ${r.config.cpu_fallback ? 'on' : 'off'}.</span>`;
 }
 
 // Reports the outcome to the server for the browser test (?autorun=1).
@@ -526,6 +536,7 @@ addEventListener('keydown', (e) => {
 });
 
 if (params.has('accelerator')) $('accelerator').value = params.get('accelerator');
+if (params.has('cpu_fallback')) $('cpu-fallback').checked = params.get('cpu_fallback') === '1';
 if (params.has('iterations')) {
   $('iterations').value = params.get('iterations');
   $('iterations-value').textContent = params.get('iterations');

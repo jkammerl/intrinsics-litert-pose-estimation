@@ -5,8 +5,9 @@
 litert_pose_estimation:
   ros__parameters:
     object_id: raw_stock_2x3x5
-    accelerator: auto        # auto (GPU, else CPU), gpu or cpu
+    accelerator: auto        # auto (hardware GPU, else CPU), gpu or cpu
     gpu_fp16: false          # float16 on the GPU: faster, less accurate
+    cpu_fallback: false      # true: networks the GPU can't run use the CPU
     confidence_threshold: 0.6
     visibility_threshold: 0.6
     refinement_iterations: 6

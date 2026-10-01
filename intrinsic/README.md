@@ -35,8 +35,11 @@ solution's service). Consequences for the solution:
   the container runtime (e.g. the NVIDIA Container Toolkit with
   `NVIDIA_DRIVER_CAPABILITIES=graphics`, or `/dev/dri` with the Mesa driver).
   Without one, the service logs why and runs on the CPU.
-* Environment: `LITERT_ACCELERATOR` (`auto`, `gpu`, `cpu`),
-  `LITERT_GPU_FP16`, `LITERT_MODELS_DIR`.
+* Environment: `LITERT_ACCELERATOR` (`auto`: the GPU if there is a hardware
+  GPU, else the CPU; `gpu`; `cpu`), `LITERT_CPU_FALLBACK` (`1`: networks that
+  the GPU can't run, or computes wrongly, run on the CPU; by default the
+  service then fails at startup, naming the network), `LITERT_GPU_FP16`,
+  `LITERT_MODELS_DIR`.
 * The image includes the FoundationPose scorers for the service's
   `batch_size` 128 (OMTS) and its default of 240. Other batch sizes need their
   scorers (`tools/convert.py --score_batches`); without them the service
@@ -74,7 +77,12 @@ rotations, translations, confidences = foundationpose.estimate(
     rgb, depth_m, masks.astype("uint8"), camera_matrix, cad_obj_text,
     iterations=6)
 print(segmenter.info(), foundationpose.info())  # where each network runs
+print(lpe.hardware_gpu_unavailable_reason())    # "" with a hardware GPU
 ```
+
+Both classes take `accelerator` (`auto`, `gpu`, `cpu`), `gpu_fp16` and
+`cpu_fallback` (run networks that the GPU can't run on the CPU instead of
+raising `RuntimeError`).
 
 The signatures and outputs match the service's model calls, so code written
 against the ML inference service can switch with a few lines

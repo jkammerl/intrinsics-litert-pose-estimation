@@ -8,6 +8,8 @@ calls to the ML inference service with the LiteRT pipeline. Environment:
   LITERT_ACCELERATOR  auto (GPU if there is a hardware GPU, else CPU), gpu or
                       cpu (default auto)
   LITERT_GPU_FP16     1 to run on the GPU in float16 (default 0)
+  LITERT_CPU_FALLBACK 1 to run networks that the GPU can't run on the CPU;
+                      by default that fails the service's startup (default 0)
 
 Runs with the service's own Python environment, e.g. through the service's
 Bazel stage-2 bootstrap with MAIN_PATH pointing to this file (see Dockerfile).
@@ -68,7 +70,8 @@ def main():
       servicer,
       models_dir=os.environ.get("LITERT_MODELS_DIR", "/litert/models"),
       accelerator=os.environ.get("LITERT_ACCELERATOR", "auto"),
-      gpu_fp16=os.environ.get("LITERT_GPU_FP16", "0") == "1")
+      gpu_fp16=os.environ.get("LITERT_GPU_FP16", "0") == "1",
+      cpu_fallback=os.environ.get("LITERT_CPU_FALLBACK", "0") == "1")
   logging.info("LiteRT backend installed: %s", info)
 
   server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),

@@ -31,10 +31,12 @@ using perception::ModelOptions;
 namespace {
 
 ModelOptions Options(const std::string& accelerator, bool gpu_fp16,
-                     const std::string& litert_library_dir, int cpu_threads) {
+                     bool cpu_fallback, const std::string& litert_library_dir,
+                     int cpu_threads) {
   ModelOptions options;
   options.accelerator = perception::ParseAccelerator(accelerator);
   options.gpu_fp16 = gpu_fp16;
+  options.cpu_fallback = cpu_fallback;
   options.runtime_library_dir = litert_library_dir;
   options.cpu_threads = cpu_threads;
   return options;
@@ -68,11 +70,11 @@ std::array<double, 9> CameraMatrix(const F64Array& k) {
 class Segmenter {
  public:
   Segmenter(const std::string& models_dir, const std::string& accelerator,
-            bool gpu_fp16, const std::string& litert_library_dir,
-            int cpu_threads)
+            bool gpu_fp16, bool cpu_fallback,
+            const std::string& litert_library_dir, int cpu_threads)
       : model_(models_dir + "/rfdetr_seg.tflite",
-               Options(accelerator, gpu_fp16, litert_library_dir,
-                       cpu_threads)) {}
+               Options(accelerator, gpu_fp16, cpu_fallback,
+                       litert_library_dir, cpu_threads)) {}
 
   // Returns (boxes [N, 4] xyxy, scores [N], masks [N, H, W] bool,
   // visibility [N]) like the service's segmentation model.
@@ -117,10 +119,11 @@ class FoundationPose {
  public:
   FoundationPose(const std::string& models_dir, int batch_size,
                  const std::string& accelerator, bool gpu_fp16,
+                 bool cpu_fallback,
                  const std::string& litert_library_dir, int cpu_threads)
       : estimator_(models_dir, batch_size,
-                   Options(accelerator, gpu_fp16, litert_library_dir,
-                           cpu_threads)) {}
+                   Options(accelerator, gpu_fp16, cpu_fallback,
+                           litert_library_dir, cpu_threads)) {}
 
   // Returns (rotations [N, 3, 3], translations [N, 3], confidences [N, 1])
   // like the service's FoundationPose model, for masks [N, H, W] (nonzero
@@ -187,12 +190,17 @@ PYBIND11_MODULE(litert_pose_estimation, m) {
       "(FoundationPose) with LiteRT, matching Intrinsic's IOC pose estimator "
       "service.";
   m.attr("DEFAULT_LITERT_LIBRARY_DIR") = PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR;
+  m.def("hardware_gpu_unavailable_reason",
+        &perception::HardwareGpuUnavailableReason,
+        "\"\" if there is a hardware GPU for LiteRT's GPU accelerator, else "
+        "why not (\"only software Vulkan devices ...\" if there is a software "
+        "one, which accelerator=\"gpu\" uses).");
 
   py::class_<Segmenter>(m, "Segmenter")
-      .def(py::init<const std::string&, const std::string&, bool,
+      .def(py::init<const std::string&, const std::string&, bool, bool,
                     const std::string&, int>(),
            py::arg("models_dir"), py::arg("accelerator") = "auto",
-           py::arg("gpu_fp16") = false,
+           py::arg("gpu_fp16") = false, py::arg("cpu_fallback") = false,
            py::arg("litert_library_dir") =
                std::string(PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR),
            py::arg("cpu_threads") = 0)
@@ -202,10 +210,11 @@ PYBIND11_MODULE(litert_pose_estimation, m) {
       .def("info", &Segmenter::Info);
 
   py::class_<FoundationPose>(m, "FoundationPose")
-      .def(py::init<const std::string&, int, const std::string&, bool,
+      .def(py::init<const std::string&, int, const std::string&, bool, bool,
                     const std::string&, int>(),
            py::arg("models_dir"), py::arg("batch_size") = 128,
            py::arg("accelerator") = "auto", py::arg("gpu_fp16") = false,
+           py::arg("cpu_fallback") = false,
            py::arg("litert_library_dir") =
                std::string(PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR),
            py::arg("cpu_threads") = 0)

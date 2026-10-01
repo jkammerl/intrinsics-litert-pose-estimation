@@ -4,7 +4,7 @@ Segmentation and 6D pose estimation of the raw stock workpiece from the
 [Open Machine Tending Solution (OMTS)](https://github.com/intrinsic-ai/intrinsic-omts),
 running entirely on [LiteRT](https://github.com/google-ai-edge/LiteRT), Google's
 on-device inference runtime: on the GPU through LiteRT's WebGPU accelerator,
-with an automatic fallback to XNNPACK on the CPU. No Triton, ONNX Runtime,
+or with XNNPACK on the CPU. No Triton, ONNX Runtime,
 CUDA or Python is needed at runtime. The pipeline follows Intrinsic's IOC pose
 estimator service step by step and reproduces its results on the service's
 recorded inputs (`docs/service_golden.md`).
@@ -93,17 +93,31 @@ The tests check, against the ONNX models' outputs:
 * LiteRT's GPU accelerator (`cpp/gpu_test.cc`): RF-DETR and the
   FoundationPose refiner on the GPU through WebGPU (Vulkan) against the
   service's outputs and the CPU's; the scorers, which some GPUs can't hold
-  (157 MB tensors at batch 128) or compute wrongly (llvmpipe at batch 24),
-  must still give the CPU's scores; and the automatic CPU fallback without a
-  hardware GPU or without the accelerator library. A software Vulkan device
-  (Mesa's llvmpipe) is enough to run them; without any Vulkan device they are
-  skipped.
+  (157 MB tensors at batch 128) or compute wrongly (llvmpipe at batch 24):
+  an error without `cpu_fallback`, the CPU's scores with it; and `auto` using
+  the CPU without a hardware GPU. A software Vulkan device (Mesa's llvmpipe)
+  is enough to run them; without any Vulkan device they are skipped.
 
-Before a network runs on the GPU, `perception::Model` runs it once on
-pseudo-random inputs on the GPU and on the CPU and compares the outputs
-(`ModelOptions::validate_gpu`): GPU drivers can compile and run a model and
-still compute it wrongly, and such a network then runs on the CPU, with the
-reason reported.
+## GPU or CPU
+
+`perception::ModelOptions` (`cpp/litert_model.h`) selects the hardware:
+
+| `accelerator` | |
+| :--- | :--- |
+| `auto` | The GPU if there is a hardware GPU, else the CPU. |
+| `gpu` | The GPU, also a software one (e.g. Mesa's llvmpipe), for testing. |
+| `cpu` | XNNPACK on all CPU cores. |
+
+On the GPU, ops that LiteRT's GPU accelerator doesn't support run on the CPU
+within the same model. Before a network runs on the GPU, it is run once on
+pseudo-random inputs on the GPU and on the CPU, and the outputs are compared
+(`validate_gpu`): GPU drivers can compile and run a model and still compute
+it wrongly. A network that fails to compile or run on the GPU, or computes
+other results than the CPU, is an error by default. With `cpu_fallback` it
+runs on the CPU instead, and the reason is reported (`fallback_reason()`).
+The ROS node (`cpu_fallback` parameter), the Python module (`cpu_fallback=`),
+the Intrinsic service (`LITERT_CPU_FALLBACK=1`) and the web demo expose the
+switch.
 
 For Android, build the same sources with the NDK and link `libLiteRt.so` from
 LiteRT's Maven package (`com.google.ai.edge.litert`).

@@ -47,12 +47,16 @@ PYTHONPATH=<dir with litert_pose_estimation*.so> python3 demo/server.py
 | 3D view / Camera | Orbit around the scene, or look through the camera. The inset shows the camera's view. |
 | Random pose, Reset (R) | Put the box at a random resting pose on the table, or back. |
 | Accelerator | `auto` uses the GPU if there is a hardware one, `gpu` forces LiteRT's WebGPU accelerator (also on a software Vulkan device), `cpu` uses XNNPACK. |
+| CPU fallback | Off: a network that the GPU can't run (or computes other results for than the CPU) makes the estimate fail with the reason. On: that network runs on the CPU, and the LiteRT section says why. |
 | Refinement iterations | The service uses 6. Fewer are faster at some cost in accuracy. |
 
 The first estimate per accelerator setting also compiles the models (shown
-separately as "model compilation"). The page loads three.js from jsDelivr.
+as "model compilation" in its latencies). The page loads three.js from
+jsDelivr. The server listens on localhost; `--host 0.0.0.0` serves other
+machines.
 
-URL parameters, used by the tests: `accelerator`, `iterations`, `pose` (4x4
+URL parameters, used by the tests: `accelerator`, `cpu_fallback=1`,
+`iterations`, `pose` (4x4
 rows as JSON) or `rest=<u>,<v>,<yaw deg>,<face x|y|z>` (a resting pose on the
 table), and `autorun` (estimates once loaded and reports the outcome to
 `/api/report`). `server.py --save_dir DIR` saves each request's images.
@@ -61,9 +65,11 @@ table), and `autorun` (estimates once loaded and reports the outcome to
 
 `POST /api/estimate` takes the frame as JSON (`width`, `height`, `rgb` as
 base64 RGB bytes, `depth` as base64 float32 meters, `camera_matrix`,
-`accelerator`, `iterations`) and returns for each detection the box, scores,
-mask (`numpy.packbits`, base64) and 4x4 pose, plus `timings_ms` and
-`accelerators`. See `server.py`.
+`accelerator`, `cpu_fallback`, `iterations`) and returns for each detection
+the box, scores, mask (`numpy.packbits`, base64) and 4x4 pose, plus
+`timings_ms` and `accelerators`; errors are `{"error": ...}` with status 400
+(bad request) or 500 (e.g. a network that the GPU can't run without
+`cpu_fallback`). See `server.py`.
 
 ## Tests
 
@@ -75,16 +81,21 @@ PYTHONPATH=<dir with litert_pose_estimation*.so>:demo python3 demo/demo_test.py 
   sent through the HTTP API as the page sends frames, gives the service's pose
   (1 mm, 0.5° modulo symmetry, score within 0.05) and segmentation; request
   decoding and errors; static files.
-* **WebGPU inference**: the same capture with `accelerator=gpu` must run
-  RF-DETR and the FoundationPose refiner on LiteRT's WebGPU accelerator and
-  give the CPU's detections and pose (1 mm, 0.5°).
+* **WebGPU inference**: the same capture with `accelerator=gpu`. Without
+  `cpu_fallback`, every network must run on LiteRT's WebGPU accelerator or the
+  request fail, naming the network the GPU can't run. With `cpu_fallback`,
+  RF-DETR and the FoundationPose refiner must run on the GPU, any network on
+  the CPU must say why, and the detections and pose must be the CPU's (1 mm,
+  0.5°).
 * **Browser** (headless Chrome, WebGL through SwiftShader): `pose.js`'s unit
   tests (`web/test/pose_test.html`: rotation errors modulo symmetry,
   roll/pitch/yaw, the projection from the camera matrix against the pinhole
   model, mask and base64 decoding, ADD-S); and the whole demo, from the
   rendered RGB-D frame to the estimate, for two box poses on the CPU and one
-  on the WebGPU accelerator: the box must be found and its pose recovered
-  within 5 mm and 5° of the truth (10° on the GPU, run with one iteration).
+  on the WebGPU accelerator (with `cpu_fallback`): the box must be found and
+  its pose recovered within 5 mm and 5° of the truth (10° on the GPU, run
+  with one iteration); and without `cpu_fallback`, the page must report the
+  network that the GPU can't run, if any.
 
 The GPU tests need a Vulkan device; a software one (Mesa's llvmpipe) works but
 is slow. They are skipped without one, the browser tests without Chrome

@@ -3,8 +3,9 @@
 // The networks are run with Accelerator::kGpu, which also uses software
 // Vulkan devices such as Mesa's llvmpipe, so these tests run on machines
 // without a hardware GPU too (slowly). They are skipped if there is no Vulkan
-// device at all. Each test compares the GPU's results with the IOC pose
-// estimator service's (testdata/service_golden) and with the CPU's.
+// device at all. The tests compare the GPU's results with the IOC pose
+// estimator service's (testdata/service_golden) and with the CPU's, and check
+// when a network runs on the CPU instead (ModelOptions::cpu_fallback).
 
 #include <algorithm>
 #include <cmath>
@@ -31,35 +32,40 @@ std::string Golden(const std::string& name) {
   return Path("testdata/service_golden/" + name);
 }
 
-ModelOptions Gpu() {
+ModelOptions Gpu(bool cpu_fallback = false) {
   ModelOptions options;
   options.accelerator = Accelerator::kGpu;
   options.gpu_fp16 = false;  // float32, comparable with the CPU.
   options.runtime_library_dir = LITERT_LIBRARY_DIR;
+  options.cpu_fallback = cpu_fallback;
   return options;
 }
 
-// Compiles `model` for the GPU, or skips the test if LiteRT's GPU
-// accelerator can't run it on this machine (e.g. no Vulkan device, or a
-// model that exceeds a software device's limits).
-std::unique_ptr<Model> GpuModelOrSkip(const std::string& model) {
-  // kAuto reports why it doesn't use the GPU without aborting.
-  ModelOptions probe = Gpu();
-  probe.accelerator = Accelerator::kAuto;
-  auto auto_model = std::make_unique<Model>(Path(model), probe);
-  if (auto_model->accelerator() == Accelerator::kGpu) return auto_model;
-  if (auto_model->fallback_reason().find("software Vulkan") ==
-      std::string::npos) {
-    // No usable GPU at all (not even a software one): skip.
-    return nullptr;
-  }
-  // Only a software GPU: kGpu uses it anyway.
-  return std::make_unique<Model>(Path(model), Gpu());
+// Whether LiteRT's GPU accelerator has a Vulkan device here (a hardware one,
+// or a software one such as llvmpipe).
+bool HasVulkanDevice() {
+  const std::string reason = HardwareGpuUnavailableReason();
+  return reason.empty() || reason.find("software Vulkan") != std::string::npos;
+}
+
+// Compiles `model` for the GPU (see Gpu()), or returns nullptr if there is no
+// Vulkan device.
+std::unique_ptr<Model> GpuModel(const std::string& model,
+                                bool cpu_fallback = false) {
+  if (!HasVulkanDevice()) return nullptr;
+  return std::make_unique<Model>(Path(model), Gpu(cpu_fallback));
+}
+
+void PrintPlacement(const char* name, const Model& model) {
+  std::printf("%s runs on the %s%s%s\n", name,
+              model.accelerator() == Accelerator::kGpu ? "GPU" : "CPU",
+              model.fallback_reason().empty() ? "" : ": ",
+              model.fallback_reason().c_str());
 }
 
 TEST(GpuAccelerator, RefinerOnTheGpuMatchesTheService) {
   std::unique_ptr<Model> refiner =
-      GpuModelOrSkip("models/foundationpose_refine.tflite");
+      GpuModel("models/foundationpose_refine.tflite");
   if (refiner == nullptr) GTEST_SKIP() << "no Vulkan device";
   ASSERT_EQ(refiner->accelerator(), Accelerator::kGpu);
   std::printf("fully accelerated on the GPU: %s\n",
@@ -94,7 +100,7 @@ TEST(GpuAccelerator, RefinerOnTheGpuMatchesTheService) {
 }
 
 TEST(GpuAccelerator, SegmentationOnTheGpuMatchesTheService) {
-  std::unique_ptr<Model> model = GpuModelOrSkip("models/rfdetr_seg.tflite");
+  std::unique_ptr<Model> model = GpuModel("models/rfdetr_seg.tflite");
   if (model == nullptr) GTEST_SKIP() << "no Vulkan device";
   ASSERT_EQ(model->accelerator(), Accelerator::kGpu);
   const nlohmann::json golden = LoadJson(Golden("case.json"));
@@ -128,15 +134,13 @@ TEST(GpuAccelerator, ScorerGivesTheCpusScores) {
   // The scorer for the last chunk of the service's batches (24 of the 280
   // candidates), on the first 24 candidates of testdata/networks. Some GPUs
   // compute it wrongly (Mesa's llvmpipe does); the GPU check at compilation
-  // (ModelOptions::validate_gpu) must then put it on the CPU, so that kGpu
-  // never gives other results than the CPU.
-  std::unique_ptr<Model> scorer =
-      GpuModelOrSkip("models/foundationpose_score_b24.tflite");
+  // (ModelOptions::validate_gpu) must catch that, so that a model compiled
+  // for the GPU never gives other results than the CPU: with cpu_fallback,
+  // it then runs on the CPU.
+  std::unique_ptr<Model> scorer = GpuModel(
+      "models/foundationpose_score_b24.tflite", /*cpu_fallback=*/true);
   if (scorer == nullptr) GTEST_SKIP() << "no Vulkan device";
-  std::printf("scorer b24 runs on the %s%s%s\n",
-              scorer->accelerator() == Accelerator::kGpu ? "GPU" : "CPU",
-              scorer->fallback_reason().empty() ? "" : ": ",
-              scorer->fallback_reason().c_str());
+  PrintPlacement("scorer b24", *scorer);
   const Tensor in1_npy = LoadNpy(Path("testdata/networks/score_input1.npy"));
   const Tensor in2_npy = LoadNpy(Path("testdata/networks/score_input2.npy"));
   const int n = 24;
@@ -163,18 +167,29 @@ TEST(GpuAccelerator, ScorerGivesTheCpusScores) {
   EXPECT_EQ(gpu_best, cpu_best);
 }
 
-TEST(GpuAccelerator, ModelsTheGpuCantRunFallBackToTheCpu) {
-  // The scorer for batches of 128 candidates has a 157 MB input tensor
-  // (2 x 128 x 6 x 160 x 160 floats), more than many GPUs' (and WebGPU's
-  // default) maximum buffer size of 128 MB: kGpu then runs it on the CPU
-  // instead of failing, and says why.
-  std::unique_ptr<Model> scorer =
-      GpuModelOrSkip("models/foundationpose_score_b128.tflite");
+// The scorer for batches of 128 candidates has a 157 MB input tensor
+// (2 x 128 x 6 x 160 x 160 floats), more than many GPUs' (and WebGPU's
+// default) maximum buffer size of 128 MB.
+constexpr char kLargeScorer[] = "models/foundationpose_score_b128.tflite";
+
+TEST(GpuAccelerator, AModelTheGpuCantRunIsAnErrorWithoutCpuFallback) {
+  if (!HasVulkanDevice()) GTEST_SKIP() << "no Vulkan device";
+  try {
+    Model scorer(Path(kLargeScorer), Gpu());
+    PrintPlacement("scorer b128", scorer);  // This GPU can run it.
+    EXPECT_EQ(scorer.accelerator(), Accelerator::kGpu);
+  } catch (const std::runtime_error& e) {
+    std::printf("scorer b128: %s\n", e.what());
+    EXPECT_NE(std::string(e.what()).find("can't run on this GPU"),
+              std::string::npos);
+    EXPECT_NE(std::string(e.what()).find("cpu_fallback"), std::string::npos);
+  }
+}
+
+TEST(GpuAccelerator, AModelTheGpuCantRunRunsOnTheCpuWithCpuFallback) {
+  std::unique_ptr<Model> scorer = GpuModel(kLargeScorer, /*cpu_fallback=*/true);
   if (scorer == nullptr) GTEST_SKIP() << "no Vulkan device";
-  std::printf("scorer b128 runs on the %s%s%s\n",
-              scorer->accelerator() == Accelerator::kGpu ? "GPU" : "CPU",
-              scorer->fallback_reason().empty() ? "" : ": ",
-              scorer->fallback_reason().c_str());
+  PrintPlacement("scorer b128", *scorer);
   if (scorer->accelerator() == Accelerator::kCpu) {
     EXPECT_NE(scorer->fallback_reason().find("can't run on this GPU"),
               std::string::npos);
@@ -191,19 +206,7 @@ TEST(GpuAccelerator, AutoUsesTheCpuWithoutAHardwareGpu) {
     GTEST_SKIP() << "this machine has a hardware GPU";
   }
   EXPECT_FALSE(model.fallback_reason().empty());
-  std::printf("auto fell back to the CPU: %s\n",
-              model.fallback_reason().c_str());
-}
-
-TEST(GpuAccelerator, AutoFallsBackWithoutTheAcceleratorLibrary) {
-  // Without LiteRT's GPU accelerator library, a GPU compilation fails and
-  // auto must run on the CPU (on machines with a hardware GPU too).
-  ModelOptions options = Gpu();
-  options.accelerator = Accelerator::kAuto;
-  options.runtime_library_dir = "/nonexistent";
-  Model model(Path("models/foundationpose_refine.tflite"), options);
-  EXPECT_EQ(model.accelerator(), Accelerator::kCpu);
-  EXPECT_FALSE(model.fallback_reason().empty());
+  std::printf("auto uses the CPU: %s\n", model.fallback_reason().c_str());
 }
 
 TEST(GpuAccelerator, ParsesAcceleratorNames) {
