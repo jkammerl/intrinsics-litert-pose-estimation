@@ -1,18 +1,26 @@
-# Raw stock perception with LiteRT
+# Intrinsic LiteRT pose estimation
 
 Segmentation and 6D pose estimation of the raw stock workpiece from the
 [Open Machine Tending Solution (OMTS)](https://github.com/intrinsic-ai/intrinsic-omts),
-as TFLite models that run with [LiteRT](https://ai.google.dev/edge/litert), and
-nothing else: no Intrinsic platform, Triton or ONNX Runtime. It contains
-everything needed to run both steps, for example in an Android app:
+running entirely on [LiteRT](https://github.com/google-ai-edge/LiteRT), Google's
+on-device inference runtime: on the GPU through LiteRT's WebGPU accelerator,
+with an automatic fallback to XNNPACK on the CPU. No Triton, ONNX Runtime,
+CUDA or Python is needed at runtime. The pipeline follows Intrinsic's IOC pose
+estimator service step by step and reproduces its results on the service's
+recorded inputs (`docs/service_golden.md`).
 
 | Path | Contents |
 | :--- | :--- |
 | [`models/`](models/README.md) | The TFLite models, each documenting its input and output tensors in its metadata. |
 | `assets/raw_stock_2x3x5/` | The workpiece's CAD model (OBJ and GLB, in meters). |
-| `testdata/` | RGB-D test scenes, with the original models' outputs at every step. |
-| `cpp/` | C++ code that runs the models with LiteRT's C API, and tests against the test data. |
-| `tools/` | Python: conversion, test data generation, and reference implementations. |
+| `cpp/` | The C++ pipeline: LiteRT model wrapper with GPU/CPU selection (`litert_model.h`), RF-DETR (`rfdetr.h`), the FoundationPose port (`foundationpose.h`), the full pipeline (`pose_estimator.h`), and tests. |
+| [`ros/litert_pose_estimation/`](ros/litert_pose_estimation/README.md) | ROS 2 node (`vision_msgs/Detection3DArray`, `~/estimate` service), launch file, golden end-to-end test. |
+| `ros_demo/` | ROS 2 demo: publishes a recorded RGB-D frame and triggers the node. |
+| `python/` | Python bindings (`litert_pose_estimation` module). |
+| [`intrinsic/`](intrinsic/README.md) | Intrinsic integration: LiteRT backend for the IOC pose estimator service, drop-in service image, tests. |
+| `testdata/` | Rendered RGB-D scenes with the ONNX models' outputs, and the IOC service's recorded inputs and outputs (`service_golden/`). |
+| `tools/` | Python: conversion, test data generation, reference implementations. |
+| `docs/` | How the golden data was recorded. |
 
 ## Pipeline
 
@@ -28,7 +36,9 @@ everything needed to run both steps, for example in an Android app:
    rendering the CAD model at each candidate and comparing it with the
    observed crop, then scores them against each other.
    `tools/foundationpose.py` is the Python reference, with the renderer and
-   helpers in `tools/foundationpose_numpy.py`; there is no C++ port yet.
+   helpers in `tools/foundationpose_numpy.py`. `cpp/foundationpose.cc` is
+   the C++ port of the service's FoundationPose model, including its CPU
+   rasterizer, matching its float32 arithmetic.
 
 The tensor specs are in [models/README.md](models/README.md).
 
@@ -42,6 +52,12 @@ The tensor specs are in [models/README.md](models/README.md).
   so the results are the same), and the scorer on all 280 at once, since the
   TFLite models need fixed batch sizes. The scores differ slightly from OMTS's,
   because the scorer compares the candidates in a batch against each other.
+
+The C++ pipeline (`cpp/pose_estimator.h`) also follows the service in the
+FoundationPose chunking: it refines and scores the candidates in chunks of
+the service's `batch_size` (128 in OMTS) with scorers converted for those
+batch sizes (`foundationpose_score_b128.tflite`, `_b24`), so that its scores
+match the service's.
 
 ## C++ tests
 
@@ -65,6 +81,10 @@ The tests check, against the ONNX models' outputs:
 
 * every model's `io_spec` metadata against its actual tensors;
 * each network on the saved inputs (float32 and float16 models);
+* the full pipeline against the IOC pose estimator service
+  (`cpp/service_golden_test.cc`, `docs/service_golden.md`): pose candidates,
+  network inputs, refiner, segmentation and the final pose. Set
+  `PERCEPTION_ACCELERATOR=auto|gpu|cpu` to choose LiteRT's hardware;
 * RF-DETR end to end, from `rgb.png` through `cpp/rfdetr.cc` and the TFLite
   model to boxes, scores and masks, against the original `segmentation.onnx`
   (masks agree to IoU > 0.99; so far they are identical). For Android, build the same sources
