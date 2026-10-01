@@ -1,0 +1,80 @@
+{
+  "description": "Inputs and outputs of the IOC pose estimator service (rs-pose-estimator-service) for one capture of the simulated Orbbec Gemini 335Le in OMTS's Lab BB-01 cell.",
+  "image": {
+    "rgb": "rgb.png",
+    "depth": "depth.npy",
+    "depth_units": "meters; non-finite where nothing is hit",
+    "height": 800,
+    "width": 1280
+  },
+  "camera_matrix": [
+    [
+      597.0,
+      0.0,
+      640.0
+    ],
+    [
+      0.0,
+      592.9999999999999,
+      400.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "cad_obj": "raw_stock_2x3x5.obj",
+  "config": {
+    "confidence_threshold": 0.6000000238418579,
+    "visibility_threshold": 0.6000000238418579,
+    "refinement_iterations": 6,
+    "batch_size": 128
+  },
+  "segmentation": [
+    {
+      "box_xyxy": [
+        589.005126953125,
+        177.82362365722656,
+        877.8274536132812,
+        418.1596984863281
+      ],
+      "score": 0.9708272218704224,
+      "visibility": 0.9369504451751709,
+      "mask": "mask_0.png",
+      "mask_pixels": 37863
+    }
+  ],
+  "poses": [
+    {
+      "rotation": [
+        [
+          -0.03126409277319908,
+          -0.8713929057121277,
+          -0.4895887076854706
+        ],
+        [
+          -0.19628989696502686,
+          -0.4749368727207184,
+          0.8578491806983948
+        ],
+        [
+          -0.980047345161438,
+          0.12292115390300751,
+          -0.1561971753835678
+        ]
+      ],
+      "translation": [
+        0.04510384425520897,
+        -0.04833089932799339,
+        0.3140682280063629
+      ],
+      "score": -21.307209014892578
+    }
+  ],
+  "foundationpose_intermediates": {
+    "num_candidates": 280,
+    "refine_calls": 18,
+    "score_calls": 3
+  }
+}

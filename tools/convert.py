@@ -16,6 +16,10 @@ Writes to --out:
                                  [40, 3]
   foundationpose_score.tflite    input1, input2 [280, 160, 160, 6] ->
                                  output1 [1, 280]
+  foundationpose_score_b<N>.tflite  The scorer for batches of N candidates,
+                                 for each N in --score_batches other than
+                                 280 (e.g. 128 and 24 to score in the chunks
+                                 the IOC pose estimator service uses).
 and float16 variants (*_fp16.tflite) with float16 weights, e.g. for GPUs.
 
 The FoundationPose networks need a fixed batch size (onnx2tf can't convert
@@ -53,6 +57,12 @@ def main():
   parser = argparse.ArgumentParser(description=__doc__)
   for flag in ("segmentation_onnx", "refine_onnx", "score_onnx", "out"):
     parser.add_argument("--" + flag, required=True)
+  parser.add_argument(
+      "--score_batches", default="280",
+      help="Comma-separated scorer batch sizes to convert.")
+  parser.add_argument(
+      "--only_scorer", action="store_true",
+      help="Only convert the scorer (for adding batch sizes).")
   args = parser.parse_args()
   os.makedirs(args.out, exist_ok=True)
   # onnx2tf runs onnxsim from PATH.
@@ -62,7 +72,8 @@ def main():
 
   with tempfile.TemporaryDirectory() as tmp:
     core = os.path.join(args.out, "rfdetr_core.onnx")
-    extract_rfdetr_core.main(args.segmentation_onnx, core)
+    if not args.only_scorer:
+      extract_rfdetr_core.main(args.segmentation_onnx, core)
     def foundationpose_args(batch):
       # Keep the NHWC inputs as they are, with a fixed batch.
       return ["-kat", "input1", "input2", "-ois",
@@ -71,8 +82,12 @@ def main():
     jobs = [
         (core, "rfdetr_seg", []),
         (args.refine_onnx, "foundationpose_refine", foundationpose_args(40)),
-        (args.score_onnx, "foundationpose_score", foundationpose_args(280)),
     ]
+    if args.only_scorer:
+      jobs = []
+    for batch in (int(b) for b in args.score_batches.split(",")):
+      name = "foundationpose_score" + ("" if batch == 280 else f"_b{batch}")
+      jobs.append((args.score_onnx, name, foundationpose_args(batch)))
     for src, name, extra in jobs:
       copy = os.path.join(tmp, name + ".onnx")
       shutil.copyfile(src, copy)

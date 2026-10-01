@@ -6,10 +6,18 @@
 #include <cstring>
 #include <functional>
 #include <numeric>
+#include <thread>
+
+#if defined(__linux__)
+#include <dlfcn.h>
+#include <vulkan/vulkan_core.h>
+#endif
 
 #include "litert/c/litert_compiled_model.h"
 #include "litert/c/litert_environment.h"
 #include "litert/c/litert_model.h"
+#include "litert/c/litert_environment_options.h"
+#include "litert/c/litert_opaque_options.h"
 #include "litert/c/litert_options.h"
 #include "litert/c/litert_tensor_buffer.h"
 
@@ -26,6 +34,19 @@ void Check(LiteRtStatus status, const char* what) {
 }
 
 #define CHECK_LITERT(expr) Check((expr), #expr)
+
+// Returns "" if `status` is OK, else a message naming `what`.
+std::string Error(LiteRtStatus status, const char* what) {
+  if (status == kLiteRtStatusOk) return "";
+  return std::string(what) + " failed with LiteRT status " +
+         std::to_string(static_cast<int>(status));
+}
+
+#define RETURN_IF_LITERT_ERROR(expr)                       \
+  do {                                                     \
+    std::string error = Error((expr), #expr);              \
+    if (!error.empty()) return error;                      \
+  } while (false)
 
 size_t NumElements(const std::vector<int32_t>& shape) {
   return std::accumulate(shape.begin(), shape.end(), size_t{1},
@@ -124,8 +145,84 @@ Tensor::Tensor(std::vector<int32_t> shape)
   std::memset(data_.get(), 0, bytes);
 }
 
-Model::Model(const std::string& path) {
-  CHECK_LITERT(LiteRtCreateEnvironment(0, nullptr, &env_));
+// Returns "" if a hardware GPU is available to LiteRT's GPU accelerator,
+// else why not. On Linux, the accelerator runs on WebGPU over Vulkan; a
+// software Vulkan device (e.g. Mesa's llvmpipe) emulates the GPU on the CPU
+// and is slower than LiteRT's XNNPACK CPU path, so `auto` doesn't use it.
+static std::string HardwareGpuUnavailableReason() {
+#if defined(__linux__)
+  void* lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (lib == nullptr) return "no Vulkan loader (libvulkan.so.1)";
+  auto get = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+      dlsym(lib, "vkGetInstanceProcAddr"));
+  auto create = get == nullptr
+                    ? nullptr
+                    : reinterpret_cast<PFN_vkCreateInstance>(
+                          get(nullptr, "vkCreateInstance"));
+  VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+  app.apiVersion = VK_API_VERSION_1_1;
+  VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+  info.pApplicationInfo = &app;
+  VkInstance instance;
+  if (create == nullptr || create(&info, nullptr, &instance) != VK_SUCCESS) {
+    dlclose(lib);
+    return "can't create a Vulkan instance";
+  }
+  auto enumerate = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+      get(instance, "vkEnumeratePhysicalDevices"));
+  auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+      get(instance, "vkGetPhysicalDeviceProperties"));
+  auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(
+      get(instance, "vkDestroyInstance"));
+  uint32_t count = 0;
+  enumerate(instance, &count, nullptr);
+  std::vector<VkPhysicalDevice> devices(count);
+  enumerate(instance, &count, devices.data());
+  bool hardware = false;
+  std::string names;
+  for (VkPhysicalDevice device : devices) {
+    VkPhysicalDeviceProperties p;
+    properties(device, &p);
+    if (p.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) hardware = true;
+    names += (names.empty() ? "" : ", ") + std::string(p.deviceName);
+  }
+  destroy(instance, nullptr);
+  dlclose(lib);
+  if (hardware) return "";
+  if (count == 0) return "no Vulkan device";
+  return "only software Vulkan devices (" + names +
+         "), which are slower than the CPU path";
+#else
+  return "";
+#endif
+}
+
+static const std::string& CachedHardwareGpuUnavailableReason() {
+  static const std::string* reason =
+      new std::string(HardwareGpuUnavailableReason());
+  return *reason;
+}
+
+Accelerator ParseAccelerator(const std::string& name) {
+  if (name == "auto") return Accelerator::kAuto;
+  if (name == "gpu") return Accelerator::kGpu;
+  if (name == "cpu") return Accelerator::kCpu;
+  std::fprintf(stderr, "Unknown accelerator \"%s\" (auto, gpu or cpu).\n",
+               name.c_str());
+  std::abort();
+}
+
+Model::Model(const std::string& path, const ModelOptions& options) {
+  std::vector<LiteRtEnvOption> env_options;
+  if (!options.runtime_library_dir.empty()) {
+    LiteRtEnvOption option;
+    option.tag = kLiteRtEnvOptionTagRuntimeLibraryDir;
+    option.value.type = kLiteRtAnyTypeString;
+    option.value.str_value = options.runtime_library_dir.c_str();
+    env_options.push_back(option);
+  }
+  CHECK_LITERT(LiteRtCreateEnvironment(env_options.size(), env_options.data(),
+                                       &env_));
   CHECK_LITERT(LiteRtCreateModelFromFile(env_, path.c_str(), &model_));
 
   LiteRtSignature signature;
@@ -154,12 +251,101 @@ Model::Model(const std::string& path) {
     if (float16) float16_.insert(name);
   }
 
-  LiteRtOptions options;
-  CHECK_LITERT(LiteRtCreateOptions(&options));
-  CHECK_LITERT(
-      LiteRtSetOptionsHardwareAccelerators(options, kLiteRtHwAcceleratorCpu));
-  CHECK_LITERT(LiteRtCreateCompiledModel(env_, model_, options, &compiled_));
-  LiteRtDestroyOptions(options);
+  if (options.accelerator == Accelerator::kCpu) {
+    std::string error = Compile(Accelerator::kCpu, options);
+    if (!error.empty()) {
+      std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
+      std::abort();
+    }
+    return;
+  }
+
+  // In auto mode, use the GPU only if there is a hardware GPU.
+  if (options.accelerator == Accelerator::kAuto &&
+      !CachedHardwareGpuUnavailableReason().empty()) {
+    fallback_reason_ = CachedHardwareGpuUnavailableReason();
+    const std::string cpu_error = Compile(Accelerator::kCpu, options);
+    if (!cpu_error.empty()) {
+      std::fprintf(stderr, "%s: %s\n", path.c_str(), cpu_error.c_str());
+      std::abort();
+    }
+    return;
+  }
+
+  // Compile for the GPU, then run once: some GPU drivers only fail when the
+  // kernels are first executed.
+  std::string error = Compile(Accelerator::kGpu, options);
+  if (error.empty()) {
+    std::map<std::string, Tensor> zeros;
+    std::map<std::string, const Tensor*> inputs;
+    for (const std::string& name : input_names_) {
+      zeros[name] = Tensor(shapes_.at(name));
+      inputs[name] = &zeros[name];
+    }
+    std::map<std::string, Tensor> outputs;
+    error = TryRun(inputs, &outputs);
+  }
+  if (error.empty()) return;
+  if (options.accelerator == Accelerator::kGpu) {
+    std::fprintf(stderr, "%s: can't run on the GPU: %s\n", path.c_str(),
+                 error.c_str());
+    std::abort();
+  }
+  fallback_reason_ = error;
+  error = Compile(Accelerator::kCpu, options);
+  if (!error.empty()) {
+    std::fprintf(stderr, "%s: %s\n", path.c_str(), error.c_str());
+    std::abort();
+  }
+}
+
+std::string Model::Compile(Accelerator accelerator,
+                           const ModelOptions& options) {
+  if (compiled_ != nullptr) {
+    LiteRtDestroyCompiledModel(compiled_);
+    compiled_ = nullptr;
+  }
+  LiteRtOptions compile_options;
+  RETURN_IF_LITERT_ERROR(LiteRtCreateOptions(&compile_options));
+  std::unique_ptr<LiteRtOptionsT, void (*)(LiteRtOptions)> destroy(
+      compile_options, LiteRtDestroyOptions);
+  if (accelerator == Accelerator::kGpu) {
+    // The GPU accelerator runs what it supports; the rest runs on the CPU.
+    RETURN_IF_LITERT_ERROR(LiteRtSetOptionsHardwareAccelerators(
+        compile_options, kLiteRtHwAcceleratorGpu | kLiteRtHwAcceleratorCpu));
+    // GPU accelerator options, as the TOML payload that LiteRT's
+    // LrtGetOpaqueGpuOptionsData produces (that helper isn't exported by the
+    // prebuilt libLiteRt.so).
+    const std::string toml =
+        "precision = " +
+        std::to_string(static_cast<int>(options.gpu_fp16
+                                            ? kLiteRtDelegatePrecisionFp16
+                                            : kLiteRtDelegatePrecisionFp32)) +
+        "\n";
+    LiteRtOpaqueOptions opaque;
+    RETURN_IF_LITERT_ERROR(LiteRtCreateOpaqueOptions(
+        "gpu_options", strdup(toml.c_str()), std::free, &opaque));
+    RETURN_IF_LITERT_ERROR(LiteRtAddOpaqueOptions(compile_options, opaque));
+  } else {
+    RETURN_IF_LITERT_ERROR(LiteRtSetOptionsHardwareAccelerators(
+        compile_options, kLiteRtHwAcceleratorCpu));
+  }
+  // CPU (XNNPACK) options, as the TOML payload of LrtGetOpaqueCpuOptionsData:
+  // LiteRT uses a single thread unless told otherwise.
+  const int threads = options.cpu_threads > 0
+                          ? options.cpu_threads
+                          : static_cast<int>(std::thread::hardware_concurrency());
+  const std::string cpu_toml = "num_threads = " + std::to_string(threads) + "\n";
+  LiteRtOpaqueOptions cpu_opaque;
+  RETURN_IF_LITERT_ERROR(LiteRtCreateOpaqueOptions(
+      "xnnpack", strdup(cpu_toml.c_str()), std::free, &cpu_opaque));
+  RETURN_IF_LITERT_ERROR(LiteRtAddOpaqueOptions(compile_options, cpu_opaque));
+  RETURN_IF_LITERT_ERROR(
+      LiteRtCreateCompiledModel(env_, model_, compile_options, &compiled_));
+  accelerator_ = accelerator;
+  fully_accelerated_ = false;
+  LiteRtCompiledModelIsFullyAccelerated(compiled_, &fully_accelerated_);
+  return "";
 }
 
 Model::~Model() {
@@ -184,6 +370,17 @@ std::string Model::Metadata(const std::string& key) const {
 
 std::map<std::string, Tensor> Model::Run(
     const std::map<std::string, const Tensor*>& inputs) {
+  std::map<std::string, Tensor> outputs;
+  std::string error = TryRun(inputs, &outputs);
+  if (!error.empty()) {
+    std::fprintf(stderr, "LiteRT: %s\n", error.c_str());
+    std::abort();
+  }
+  return outputs;
+}
+
+std::string Model::TryRun(const std::map<std::string, const Tensor*>& inputs,
+                          std::map<std::string, Tensor>* outputs_out) {
   // Float16 tensors are converted to and from float32 in separate buffers.
   std::vector<std::unique_ptr<AlignedBuffer>> half_buffers;
   auto make_buffer = [&](const std::string& name, float* data, size_t size) {
@@ -228,9 +425,11 @@ std::map<std::string, Tensor> Model::Run(
     if (half != nullptr) half_outputs.emplace_back(&tensor, half);
     output_buffers.push_back(buffer);
   }
-  CHECK_LITERT(LiteRtRunCompiledModel(
-      compiled_, /*signature_index=*/0, input_buffers.size(),
-      input_buffers.data(), output_buffers.size(), output_buffers.data()));
+  const std::string error = Error(
+      LiteRtRunCompiledModel(compiled_, /*signature_index=*/0,
+                             input_buffers.size(), input_buffers.data(),
+                             output_buffers.size(), output_buffers.data()),
+      "LiteRtRunCompiledModel");
   for (auto [tensor, half] : half_outputs) {
     for (size_t i = 0; i < tensor->size(); ++i) {
       (*tensor)[i] = HalfToFloat(half[i]);
@@ -242,7 +441,8 @@ std::map<std::string, Tensor> Model::Run(
   for (LiteRtTensorBuffer buffer : output_buffers) {
     LiteRtDestroyTensorBuffer(buffer);
   }
-  return outputs;
+  if (error.empty()) *outputs_out = std::move(outputs);
+  return error;
 }
 
 }  // namespace perception

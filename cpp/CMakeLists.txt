@@ -26,12 +26,18 @@ else()
   set(LITERT_WHEEL_SHA256 4e151f07229b2f714f9b34ea42a9cacffc98953b1f6e832adee4479f6b81f50a)
 endif()
 set(LITERT_WHEEL ${CMAKE_BINARY_DIR}/ai_edge_litert.whl)
-if(NOT EXISTS ${CMAKE_BINARY_DIR}/litert_lib/ai_edge_litert/libLiteRt.so)
+# The LiteRT runtime and its GPU accelerator (ML Drift on WebGPU, which runs
+# on Vulkan on Linux). LiteRT loads the accelerator at runtime from
+# LITERT_LIBRARY_DIR.
+set(LITERT_LIBRARY_DIR ${CMAKE_BINARY_DIR}/litert_lib/ai_edge_litert)
+if(NOT EXISTS ${LITERT_LIBRARY_DIR}/libLiteRt.so OR
+   NOT EXISTS ${LITERT_LIBRARY_DIR}/libLiteRtWebGpuAccelerator.so)
   file(DOWNLOAD ${LITERT_WHEEL_URL} ${LITERT_WHEEL}
        EXPECTED_HASH SHA256=${LITERT_WHEEL_SHA256})
   file(ARCHIVE_EXTRACT INPUT ${LITERT_WHEEL}
        DESTINATION ${CMAKE_BINARY_DIR}/litert_lib
-       PATTERNS ai_edge_litert/libLiteRt.so)
+       PATTERNS ai_edge_litert/libLiteRt.so
+                ai_edge_litert/libLiteRtWebGpuAccelerator.so)
 endif()
 
 # LiteRT generates build_config.h at configure time.
@@ -42,13 +48,22 @@ configure_file(
   ${CMAKE_BINARY_DIR}/litert_generated/litert/build_common/build_config.h
 )
 
-add_library(litert_c SHARED IMPORTED)
+add_library(litert_c SHARED IMPORTED GLOBAL)
 set_target_properties(litert_c PROPERTIES
-  IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/litert_lib/ai_edge_litert/libLiteRt.so
+  IMPORTED_LOCATION ${LITERT_LIBRARY_DIR}/libLiteRt.so
   IMPORTED_NO_SONAME TRUE
   INTERFACE_INCLUDE_DIRECTORIES
     "${litert_SOURCE_DIR};${CMAKE_BINARY_DIR}/litert_generated"
 )
+
+# Tests are built when this is the top-level project; other projects (e.g.
+# the ROS 2 node) can include it with add_subdirectory() for the library.
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(PERCEPTION_TOP_LEVEL ON)
+else()
+  set(PERCEPTION_TOP_LEVEL OFF)
+endif()
+option(PERCEPTION_BUILD_TESTS "Build the tests" ${PERCEPTION_TOP_LEVEL})
 
 FetchContent_Declare(
   googletest
@@ -67,15 +82,62 @@ FetchContent_Declare(
   SOURCE_SUBDIR headers_only
 )
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest json stb)
+if(PERCEPTION_BUILD_TESTS)
+  FetchContent_MakeAvailable(googletest)
+endif()
+FetchContent_MakeAvailable(json stb)
 
-# Runs the models; no dependencies other than LiteRT.
-add_library(perception
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
+
+# Runs the models with LiteRT; FoundationPose also uses OpenCV for the same
+# image warps as the Python service.
+add_library(perception STATIC
+  foundationpose.cc
   litert_model.cc
+  pose_estimator.cc
   rfdetr.cc
 )
 target_include_directories(perception PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(perception PUBLIC litert_c)
+target_link_libraries(perception PUBLIC litert_c ${OpenCV_LIBS})
+target_include_directories(perception PRIVATE ${OpenCV_INCLUDE_DIRS})
+# Don't fuse multiply-adds, so that the arithmetic matches NumPy's.
+target_compile_options(perception PRIVATE -ffp-contract=off)
+set_target_properties(perception PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Python bindings (python/bindings.cc): the module litert_pose_estimation,
+# e.g. for Intrinsic's IOC pose estimator service (see intrinsic/).
+option(PERCEPTION_BUILD_PYTHON "Build the Python module" OFF)
+if(PERCEPTION_BUILD_PYTHON)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+  find_package(pybind11 CONFIG REQUIRED)
+  pybind11_add_module(litert_pose_estimation
+    ${CMAKE_CURRENT_SOURCE_DIR}/../python/bindings.cc)
+  target_link_libraries(litert_pose_estimation PRIVATE perception)
+  target_compile_definitions(litert_pose_estimation PRIVATE
+    PERCEPTION_DEFAULT_LITERT_LIBRARY_DIR="${LITERT_LIBRARY_DIR}")
+  # Find libLiteRt.so next to the module, or in the build tree.
+  set_target_properties(litert_pose_estimation PROPERTIES
+    BUILD_RPATH "${LITERT_LIBRARY_DIR}"
+    INSTALL_RPATH "$ORIGIN")
+endif()
+
+# Test helpers (images, .npy and JSON files), also used by the ROS 2 node's
+# tests.
+add_library(perception_test_util STATIC test_util.cc)
+target_include_directories(perception_test_util PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR} ${stb_SOURCE_DIR})
+target_link_libraries(perception_test_util PUBLIC
+  perception nlohmann_json::nlohmann_json)
+target_compile_definitions(perception_test_util PUBLIC
+  PERCEPTION_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+  LITERT_LIBRARY_DIR="${LITERT_LIBRARY_DIR}"
+)
+set_target_properties(perception_test_util PROPERTIES
+  POSITION_INDEPENDENT_CODE ON)
+
+if(NOT PERCEPTION_BUILD_TESTS)
+  return()
+endif()
 
 enable_testing()
 include(GoogleTest)
@@ -83,12 +145,8 @@ include(GoogleTest)
 add_executable(perception_test
   models_test.cc
   rfdetr_test.cc
-  test_util.cc
+  service_golden_test.cc
 )
-target_include_directories(perception_test PRIVATE ${stb_SOURCE_DIR})
-target_link_libraries(perception_test
-  perception GTest::gtest_main nlohmann_json::nlohmann_json)
-target_compile_definitions(perception_test PRIVATE
-  PERCEPTION_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
-)
-gtest_discover_tests(perception_test DISCOVERY_TIMEOUT 60)
+target_link_libraries(perception_test perception_test_util GTest::gtest_main)
+gtest_discover_tests(perception_test DISCOVERY_TIMEOUT 60
+  PROPERTIES TIMEOUT 1800)
