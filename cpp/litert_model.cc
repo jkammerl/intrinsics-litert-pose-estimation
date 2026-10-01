@@ -124,10 +124,17 @@ float HalfToFloat(uint16_t h) {
   return f;
 }
 
+// The bytes to allocate for a LiteRT host memory buffer of `bytes`. LiteRT
+// needs LITERT_HOST_MEMORY_BUFFER_ALIGNMENT (64) byte alignment, and
+// aligned_alloc a size that is a multiple of the alignment. XNNPACK's kernels
+// may also read a little past the end of their inputs (XNN_EXTRA_BYTES),
+// which faults where the allocation ends at an unmapped page (e.g. on macOS).
+size_t HostBufferBytes(size_t bytes) { return (bytes + 64 + 63) / 64 * 64; }
+
 // 64-byte aligned host memory for a LiteRT tensor buffer.
 struct AlignedBuffer {
   explicit AlignedBuffer(size_t bytes)
-      : size((bytes + 63) / 64 * 64), data(std::aligned_alloc(64, size)) {}
+      : size(HostBufferBytes(bytes)), data(std::aligned_alloc(64, size)) {}
   ~AlignedBuffer() { std::free(data); }
   AlignedBuffer(const AlignedBuffer&) = delete;
   AlignedBuffer& operator=(const AlignedBuffer&) = delete;
@@ -141,9 +148,7 @@ void Tensor::Free::operator()(float* p) const { std::free(p); }
 
 Tensor::Tensor(std::vector<int32_t> shape)
     : shape_(std::move(shape)), size_(NumElements(shape_)) {
-  // LiteRT needs LITERT_HOST_MEMORY_BUFFER_ALIGNMENT (64) byte alignment, and
-  // aligned_alloc a size that is a multiple of the alignment.
-  size_t bytes = (size_ * sizeof(float) + 63) / 64 * 64;
+  size_t bytes = HostBufferBytes(size_ * sizeof(float));
   data_.reset(static_cast<float*>(std::aligned_alloc(64, bytes)));
   std::memset(data_.get(), 0, bytes);
 }
@@ -331,7 +336,13 @@ std::string Model::Compile(Accelerator accelerator,
   const int threads = options.cpu_threads > 0
                           ? options.cpu_threads
                           : static_cast<int>(std::thread::hardware_concurrency());
-  const std::string cpu_toml = "num_threads = " + std::to_string(threads) + "\n";
+  std::string cpu_toml = "num_threads = " + std::to_string(threads) + "\n";
+#if defined(__APPLE__)
+  // On Apple CPUs, XNNPACK otherwise takes faster paths for the float16
+  // models that overflow to inf (TFLITE_XNNPACK_DELEGATE_FLAG_SLOW_CONSISTENT_
+  // ARITHMETIC).
+  cpu_toml += "flags = 512\n";
+#endif
   LiteRtOpaqueOptions cpu_opaque;
   RETURN_IF_LITERT_ERROR(LiteRtCreateOpaqueOptions(
       "xnnpack", strdup(cpu_toml.c_str()), std::free, &cpu_opaque));
