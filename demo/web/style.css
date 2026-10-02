@@ -117,5 +117,3 @@ thead th { color: var(--muted); font-weight: 500; }
 @media (min-width: 901px) {
   .stage { position: sticky; top: 12px; align-self: start; }
 }
-.controls label.check { display: flex; gap: 8px; align-items: baseline; color: var(--text); }
-.controls label.check input { width: auto; }

@@ -317,7 +317,7 @@ async function runEstimate() {
     width: W, height: H, camera_matrix: K,
     rgb: P.toBase64(frame.rgb), depth: P.toBase64(frame.depth),
     accelerator: $('accelerator').value,
-    cpu_fallback: $('cpu-fallback').checked,
+    cpu_fallback: cpuFallback,
     iterations: Number($('iterations').value),
   });
   const encodeMs = performance.now() - t0;
@@ -491,7 +491,7 @@ function showAccelerators(r) {
     `<div><b>${name}</b>${a.accelerator === 'gpu' ? 'GPU (WebGPU accelerator' + (a.fully_accelerated ? ', fully delegated)' : ', partially delegated)') : 'CPU (XNNPACK)'}` +
     (a.fallback_reason ? `<br><span>${escapeHtml(a.fallback_reason)}</span>` : '') + '</div>').join('') +
     `<span>${r.config.iterations} refinement iteration(s), scorer batch ${r.config.batch_size}, ` +
-    `CPU fallback ${r.config.cpu_fallback ? 'on' : 'off'}.</span>`;
+    `${r.config.cpu_fallback ? 'CPU fallback on' : 'no CPU fallback'}.</span>`;
 }
 
 // Reports the outcome to the server for the browser test (?autorun=1).
@@ -536,7 +536,8 @@ addEventListener('keydown', (e) => {
 });
 
 if (params.has('accelerator')) $('accelerator').value = params.get('accelerator');
-if (params.has('cpu_fallback')) $('cpu-fallback').checked = params.get('cpu_fallback') === '1';
+// Run networks that the GPU can't run on the CPU instead of failing (?cpu_fallback=1).
+const cpuFallback = params.get('cpu_fallback') === '1';
 if (params.has('iterations')) {
   $('iterations').value = params.get('iterations');
   $('iterations-value').textContent = params.get('iterations');

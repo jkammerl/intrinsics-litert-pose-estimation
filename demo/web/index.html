@@ -54,10 +54,8 @@
             <option value="cpu">cpu (XNNPACK)</option>
           </select>
         </label>
-        <label class="check"><input type="checkbox" id="cpu-fallback">
-          Run networks the GPU can't run on the CPU (else that is an error)</label>
-        <label>Refinement iterations <output id="iterations-value">6</output>
-          <input type="range" id="iterations" min="1" max="6" value="6">
+        <label>Refinement iterations <output id="iterations-value">2</output>
+          <input type="range" id="iterations" min="1" max="6" value="2">
         </label>
         <button id="estimate" class="primary">Estimate pose</button>
         <p class="status" id="status" role="status">Ready.</p>

@@ -77,8 +77,7 @@ existed need its rewrites to run on Metal (`cd tools &&
 | 3D view / Camera | Orbit around the scene, or look through the camera. The inset shows the camera's view. |
 | Random pose, Reset (R) | Put the box at a random resting pose on the table, or back. |
 | Accelerator | `auto` uses the GPU if there is a hardware one, `gpu` forces LiteRT's WebGPU accelerator (also on a software Vulkan device), `cpu` uses XNNPACK. |
-| CPU fallback | Off: a network that the GPU can't run (or computes other results for than the CPU) makes the estimate fail with the reason. On: that network runs on the CPU, also if the GPU fails later, and the LiteRT section says why. |
-| Refinement iterations | The service uses 6. Fewer are faster at some cost in accuracy. |
+| Refinement iterations | 2 by default; the service uses 6. Fewer are faster at some cost in accuracy. |
 
 The first estimate per accelerator setting also compiles the models (shown
 as "model compilation" in its latencies). The page loads three.js from
@@ -86,8 +85,8 @@ as "model compilation" in its latencies). The page loads three.js from
 the server sends it to jsDelivr. The server listens on localhost;
 `--host 0.0.0.0` serves other machines.
 
-URL parameters, used by the tests: `accelerator`, `cpu_fallback=1`,
-`iterations`, `pose` (4x4
+URL parameters, used by the tests: `accelerator`, `cpu_fallback=1` (run
+networks that the GPU can't run on the CPU instead of failing), `iterations`, `pose` (4x4
 rows as JSON) or `rest=<u>,<v>,<yaw deg>,<face x|y|z>` (a resting pose on the
 table), and `autorun` (estimates once loaded and reports the outcome to
 `/api/report`). `server.py --save_dir DIR` saves each request's images.
