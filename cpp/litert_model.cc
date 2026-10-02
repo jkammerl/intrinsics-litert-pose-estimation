@@ -220,6 +220,8 @@ Model::Model(const std::string& path, const ModelOptions& options) {
 }
 
 void Model::Init(const std::string& path, const ModelOptions& options) {
+  path_ = path;
+  options_ = options;
   std::vector<LiteRtEnvOption> env_options;
   if (!options.runtime_library_dir.empty()) {
     LiteRtEnvOption option;
@@ -415,6 +417,16 @@ std::map<std::string, Tensor> Model::Run(
     const std::map<std::string, const Tensor*>& inputs) {
   std::map<std::string, Tensor> outputs;
   std::string error = TryRun(inputs, &outputs);
+  if (!error.empty() && accelerator_ == Accelerator::kGpu &&
+      options_.cpu_fallback) {
+    // GPU drivers can also fail later than the check at compilation (e.g.
+    // software GPUs under load).
+    fallback_reason_ = "failed on this GPU: " + error;
+    std::fprintf(stderr, "%s: %s; using the CPU.\n", path_.c_str(),
+                 fallback_reason_.c_str());
+    error = Compile(Accelerator::kCpu, options_);
+    if (error.empty()) error = TryRun(inputs, &outputs);
+  }
   if (!error.empty()) throw std::runtime_error("LiteRT: " + error);
   return outputs;
 }

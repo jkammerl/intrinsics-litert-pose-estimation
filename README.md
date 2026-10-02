@@ -16,7 +16,7 @@ recorded inputs (`docs/service_golden.md`).
 | `cpp/` | The C++ pipeline: LiteRT model wrapper with GPU/CPU selection (`litert_model.h`), RF-DETR (`rfdetr.h`), the FoundationPose port (`foundationpose.h`), the full pipeline (`pose_estimator.h`), and tests. |
 | [`ros/litert_pose_estimation/`](ros/litert_pose_estimation/README.md) | ROS 2 node (`vision_msgs/Detection3DArray`, `~/estimate` service), launch file, golden end-to-end test. |
 | `ros_demo/` | ROS 2 demo: publishes a recorded RGB-D frame and triggers the node. |
-| [`demo/`](demo/README.md) | Web demo: move the raw stock in a 3D scene, estimate its pose from the rendered RGB-D frame with LiteRT, compare with the truth. |
+| [`demo/`](demo/README.md) | Web demo: move the raw stock in a 3D scene, estimate its pose from the rendered RGB-D frame with LiteRT, compare with the truth. Runs in one container (`demo/Containerfile`). |
 | `python/` | Python bindings (`litert_pose_estimation` module). |
 | [`intrinsic/`](intrinsic/README.md) | Intrinsic integration: LiteRT backend for the IOC pose estimator service, drop-in service image, tests. |
 | `testdata/` | Rendered RGB-D scenes with the ONNX models' outputs, and the IOC service's recorded inputs and outputs (`service_golden/`). |
@@ -131,7 +131,9 @@ pseudo-random inputs on the GPU and on the CPU, and the outputs are compared
 (`validate_gpu`): GPU drivers can compile and run a model and still compute
 it wrongly. A network that fails to compile or run on the GPU, or computes
 other results than the CPU, is an error by default. With `cpu_fallback` it
-runs on the CPU instead, and the reason is reported (`fallback_reason()`).
+runs on the CPU instead, and the reason is reported (`fallback_reason()`);
+that also covers a GPU that fails later, when the network runs (software
+GPUs such as llvmpipe occasionally do under load).
 The ROS node (`cpu_fallback` parameter), the Python module (`cpu_fallback=`),
 the Intrinsic service (`LITERT_CPU_FALLBACK=1`) and the web demo expose the
 switch.

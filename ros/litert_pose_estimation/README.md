@@ -62,7 +62,8 @@ on pseudo-random inputs and compared with the CPU. A network that fails to
 compile or run, or computes other results than the CPU (e.g. a tensor larger
 than the GPU's maximum buffer size, or a driver bug), stops the node at
 startup with the reason, unless `cpu_fallback: true`: then that network runs
-on the CPU and the startup log says why.
+on the CPU and the startup log says why. With `cpu_fallback: true`, a network
+that fails on the GPU later, while running, also moves to the CPU.
 
 At startup the node logs where every network runs, e.g.:
 

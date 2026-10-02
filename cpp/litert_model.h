@@ -115,7 +115,9 @@ class Model {
   std::string Metadata(const std::string& key) const;
 
   // Runs the model. `inputs` must contain every input, with its shape;
-  // throws std::runtime_error if LiteRT fails.
+  // throws std::runtime_error if LiteRT fails. If the GPU fails and
+  // ModelOptions::cpu_fallback is set, the model is compiled for the CPU
+  // (fallback_reason() says why) and run there.
   std::map<std::string, Tensor> Run(
       const std::map<std::string, const Tensor*>& inputs);
 
@@ -148,6 +150,9 @@ class Model {
   Accelerator accelerator_ = Accelerator::kCpu;
   bool fully_accelerated_ = false;
   std::string fallback_reason_;
+  // For compiling for the CPU when the GPU fails at run time.
+  std::string path_;
+  ModelOptions options_;
   std::vector<std::string> input_names_;
   std::vector<std::string> output_names_;
   std::map<std::string, std::vector<int32_t>> shapes_;
