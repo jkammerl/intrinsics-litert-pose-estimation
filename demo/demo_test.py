@@ -17,6 +17,7 @@ llvmpipe, slowly), browser tests if Chrome is installed (or $CHROME is set).
 
 import base64
 import functools
+import http.client
 import http.server
 import json
 import os
@@ -135,6 +136,20 @@ class ServerTest(unittest.TestCase):
       self.assertTrue(content, path)
     _, glb = _server.get("/assets/raw_stock_2x3x5.glb")
     self.assertEqual(glb[:4], b"glTF")
+
+  def test_serves_three_js_locally_or_from_the_cdn(self):
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", _server.httpd.server_address[1])
+    connection.request("GET", "/vendor/three/build/three.module.js")
+    response = connection.getresponse()
+    if os.path.exists(os.path.join(server.WEB, "vendor", "three")):
+      self.assertEqual(response.status, 200)
+      self.assertIn(b"REVISION", response.read())
+    else:  # Not vendored (demo/vendor_three.sh): redirected to jsDelivr.
+      self.assertEqual(response.status, 302)
+      self.assertEqual(response.getheader("Location"),
+                       server.THREE_CDN + "build/three.module.js")
+    connection.close()
 
   def test_decodes_requests(self):
     rgb = np.arange(2 * 3 * 3, dtype=np.uint8).reshape(2, 3, 3)

@@ -5,3 +5,6 @@ __pycache__/
 # tools/fetch_foundationpose.sh.
 /models/foundationpose_*.tflite
 /venv/
+
+# three.js, copied by demo/vendor_three.sh.
+/demo/web/vendor/

@@ -28,6 +28,8 @@ import functools
 import http.server
 import json
 import os
+import signal
+import sys
 import threading
 import time
 
@@ -40,6 +42,16 @@ WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 # The CAD model as the IOC service receives it from the pose estimator asset
 # (trimesh's OBJ export), so that the estimates match the service's.
 CAD_OBJ = os.path.join(ROOT, "testdata", "service_golden", "raw_stock_2x3x5.obj")
+# LiteRT's GPU accelerator library: next to the module when it is installed
+# (as in demo/Containerfile), else in its build tree.
+LITERT_LIBRARY_DIR = os.path.dirname(os.path.abspath(lpe.__file__))
+if not os.path.exists(
+    os.path.join(LITERT_LIBRARY_DIR, "libLiteRtWebGpuAccelerator.so")):
+  LITERT_LIBRARY_DIR = lpe.DEFAULT_LITERT_LIBRARY_DIR
+# The page loads three.js from web/vendor/three (demo/vendor_three.sh), else
+# from jsDelivr.
+VENDOR_THREE = "/vendor/three/"
+THREE_CDN = "https://cdn.jsdelivr.net/npm/three@0.170.0/"
 
 
 class Pipeline:
@@ -69,11 +81,11 @@ class Pipeline:
     if key in self._models:
       return (*self._models[key], 0.0)
     start = time.perf_counter()
-    segmenter = lpe.Segmenter(self._models_dir, accelerator=accelerator,
-                              cpu_fallback=cpu_fallback)
+    options = dict(accelerator=accelerator, cpu_fallback=cpu_fallback,
+                   litert_library_dir=LITERT_LIBRARY_DIR)
+    segmenter = lpe.Segmenter(self._models_dir, **options)
     foundationpose = lpe.FoundationPose(
-        self._models_dir, batch_size=self._batch_size,
-        accelerator=accelerator, cpu_fallback=cpu_fallback)
+        self._models_dir, batch_size=self._batch_size, **options)
     self._models[key] = (segmenter, foundationpose)
     return segmenter, foundationpose, (time.perf_counter() - start) * 1000
 
@@ -155,6 +167,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     if self.path == "/api/report":
       self._send_json(self.pipeline.report, 200)
       return
+    path = self.path.split("?")[0]
+    if (path.startswith(VENDOR_THREE) and
+        not os.path.exists(self.translate_path(path))):
+      # three.js isn't vendored (demo/vendor_three.sh): use jsDelivr.
+      self.send_response(302)
+      self.send_header("Location", THREE_CDN + path[len(VENDOR_THREE):])
+      self.end_headers()
+      return
     super().do_GET()
 
   def do_POST(self):
@@ -214,6 +234,8 @@ def main():
   pipeline.save_dir = args.save_dir
   server = http.server.ThreadingHTTPServer(
       (args.host, args.port), functools.partial(Handler, pipeline=pipeline))
+  # Stop on SIGTERM too (e.g. podman stop: as PID 1, Python ignores it).
+  signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
   print(f"Serving http://{args.host}:{args.port}")
   server.serve_forever()
 

@@ -1,0 +1,99 @@
+# The web demo in one container: the LiteRT Python module, the models and the
+# page, so that running the demo only needs podman (or docker).
+#
+# Building downloads NVIDIA's FoundationPose models from NGC and converts them
+# (tools/fetch_foundationpose.sh); set ACCEPT_NVIDIA_LICENSE=yes to accept
+# NVIDIA's Deep Learning Models License Agreement
+# (https://developer.download.nvidia.com/licenses/tao_toolkit_21-08_models_eula.pdf).
+# The image then contains those models: don't publish it. From the repository
+# root:
+#
+#   podman build -f demo/Containerfile --build-arg ACCEPT_NVIDIA_LICENSE=yes \
+#       -t litert-pose-demo .
+#   podman run --rm -p 127.0.0.1:8765:8765 litert-pose-demo
+#   # open http://localhost:8765
+#
+# Building takes about 45 minutes (the model conversion is most of it) and
+# 8 GB of memory. The demo runs on the CPU; for LiteRT's GPU accelerator, give
+# the container a Vulkan driver (e.g. --device /dev/dri with
+# --build-arg EXTRA_PACKAGES=mesa-vulkan-drivers, or the NVIDIA Container
+# Toolkit).
+
+ARG PYTHON_IMAGE=docker.io/library/python:3.12-slim-trixie
+
+# NVIDIA's FoundationPose models, converted to TFLite.
+FROM ${PYTHON_IMAGE} AS models
+ARG ACCEPT_NVIDIA_LICENSE
+RUN if [ "${ACCEPT_NVIDIA_LICENSE}" != "yes" ]; then \
+      echo "Set --build-arg ACCEPT_NVIDIA_LICENSE=yes to accept NVIDIA's license for the FoundationPose models (see demo/Containerfile)." >&2; \
+      exit 1; \
+    fi
+# git: onnxoptimizer has no arm64 wheel and fetches its dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential curl ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+COPY tools/requirements.txt /src/tools/requirements.txt
+RUN python -m venv /venv \
+    && /venv/bin/pip install --no-cache-dir -r /src/tools/requirements.txt
+COPY tools /src/tools
+RUN VENV=/venv OUT=/models /src/tools/fetch_foundationpose.sh --accept-nvidia-license
+
+# The Python module (and LiteRT's libraries), with a minimal static OpenCV.
+FROM ${PYTHON_IMAGE} AS module
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git wget ca-certificates libvulkan-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir pybind11==3.0.1
+RUN wget -q https://github.com/opencv/opencv/archive/refs/tags/4.10.0.tar.gz \
+    && tar xzf 4.10.0.tar.gz && cmake -S opencv-4.10.0 -B opencv-build \
+      -DCMAKE_BUILD_TYPE=Release -DBUILD_LIST=core,imgproc \
+      -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+      -DWITH_IPP=OFF -DWITH_ITT=OFF -DWITH_OPENCL=OFF -DWITH_TBB=OFF \
+      -DWITH_OPENMP=OFF -DWITH_PTHREADS_PF=ON -DWITH_EIGEN=OFF \
+      -DWITH_LAPACK=OFF -DBUILD_ZLIB=ON -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DWITH_TIFF=OFF -DWITH_JPEG=OFF -DWITH_PNG=OFF -DWITH_WEBP=OFF \
+      -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF \
+      -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_GTK=OFF \
+      -DWITH_QT=OFF -DWITH_PROTOBUF=OFF -DBUILD_opencv_python3=OFF \
+      -DBUILD_JAVA=OFF -DWITH_ADE=OFF \
+    && cmake --build opencv-build -j"$(nproc)" --target install \
+    && rm -rf opencv-4.10.0 opencv-build 4.10.0.tar.gz
+COPY cpp /src/cpp
+COPY python /src/python
+RUN cmake -S /src/cpp -B /build -DCMAKE_BUILD_TYPE=Release \
+      -DPERCEPTION_BUILD_PYTHON=ON -DPERCEPTION_BUILD_TESTS=OFF \
+      -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
+      -Dpybind11_DIR="$(python -m pybind11 --cmakedir)" \
+      -DPython3_EXECUTABLE="$(which python3)" \
+    && cmake --build /build -j"$(nproc)" --target litert_pose_estimation \
+    && mkdir -p /lib-out \
+    && cp /build/litert_pose_estimation*.so /lib-out/ \
+    && cp /build/litert_lib/ai_edge_litert/libLiteRt.so \
+          /build/litert_lib/ai_edge_litert/libLiteRtWebGpuAccelerator.so /lib-out/
+
+# three.js for the page, so that it works offline.
+FROM ${PYTHON_IMAGE} AS web
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY demo/vendor_three.sh /src/demo/vendor_three.sh
+RUN /src/demo/vendor_three.sh
+
+FROM ${PYTHON_IMAGE}
+ARG EXTRA_PACKAGES=""
+RUN apt-get update && apt-get install -y --no-install-recommends libvulkan1 ${EXTRA_PACKAGES} \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir numpy==2.2.6
+COPY --from=module /lib-out/ /app/lib/
+COPY demo/server.py /app/demo/server.py
+COPY demo/web /app/demo/web
+COPY --from=web /src/demo/web/vendor /app/demo/web/vendor
+COPY models/rfdetr_seg.tflite /app/models/
+COPY --from=models /models/foundationpose_refine.tflite \
+     /models/foundationpose_score_b128.tflite \
+     /models/foundationpose_score_b24.tflite /app/models/
+COPY assets/raw_stock_2x3x5/raw_stock_2x3x5.glb /app/assets/raw_stock_2x3x5/
+COPY testdata/service_golden/raw_stock_2x3x5.obj /app/testdata/service_golden/
+ENV PYTHONPATH=/app/lib
+EXPOSE 8765
+CMD ["python", "/app/demo/server.py", "--host", "0.0.0.0"]

@@ -33,12 +33,30 @@ IOC service's outputs (`docs/service_golden.md`).
 
 ## Run
 
-Get the FoundationPose models (`tools/fetch_foundationpose.sh
---accept-nvidia-license`, see the top-level README) and build the Python
-module (see `intrinsic/README.md`), then:
+With podman (or docker) only, from the repository root:
 
 ```bash
-pip install numpy opencv-python-headless   # if missing
+podman build -f demo/Containerfile --build-arg ACCEPT_NVIDIA_LICENSE=yes \
+    -t litert-pose-demo .
+podman run --rm -p 127.0.0.1:8765:8765 litert-pose-demo
+# open http://localhost:8765
+```
+
+The build downloads NVIDIA's FoundationPose models from NGC and converts
+them; `ACCEPT_NVIDIA_LICENSE=yes` accepts NVIDIA's
+[Deep Learning Models License Agreement](https://developer.download.nvidia.com/licenses/tao_toolkit_21-08_models_eula.pdf),
+and the image then contains the models, so don't publish it. It takes about
+45 minutes and 8 GB of memory. The image holds only Python, NumPy, the Vulkan
+loader, the module and the page (three.js included, so the page works
+offline). For LiteRT's GPU accelerator, give the container a Vulkan driver:
+e.g. `--device /dev/dri` and `--build-arg EXTRA_PACKAGES=mesa-vulkan-drivers`
+for Mesa, or the NVIDIA Container Toolkit.
+
+Without containers: get the FoundationPose models (`tools/fetch_foundationpose.sh
+--accept-nvidia-license`, see the top-level README) and build the Python
+module (see `intrinsic/README.md`); the server then only needs NumPy:
+
+```bash
 PYTHONPATH=<dir with litert_pose_estimation*.so> python3 demo/server.py
 # open http://localhost:8765
 ```
@@ -49,13 +67,14 @@ PYTHONPATH=<dir with litert_pose_estimation*.so> python3 demo/server.py
 | 3D view / Camera | Orbit around the scene, or look through the camera. The inset shows the camera's view. |
 | Random pose, Reset (R) | Put the box at a random resting pose on the table, or back. |
 | Accelerator | `auto` uses the GPU if there is a hardware one, `gpu` forces LiteRT's WebGPU accelerator (also on a software Vulkan device), `cpu` uses XNNPACK. |
-| CPU fallback | Off: a network that the GPU can't run (or computes other results for than the CPU) makes the estimate fail with the reason. On: that network runs on the CPU, and the LiteRT section says why. |
+| CPU fallback | Off: a network that the GPU can't run (or computes other results for than the CPU) makes the estimate fail with the reason. On: that network runs on the CPU, also if the GPU fails later, and the LiteRT section says why. |
 | Refinement iterations | The service uses 6. Fewer are faster at some cost in accuracy. |
 
 The first estimate per accelerator setting also compiles the models (shown
 as "model compilation" in its latencies). The page loads three.js from
-jsDelivr. The server listens on localhost; `--host 0.0.0.0` serves other
-machines.
+`web/vendor/` (`demo/vendor_three.sh` copies it there, for offline use), else
+the server sends it to jsDelivr. The server listens on localhost;
+`--host 0.0.0.0` serves other machines.
 
 URL parameters, used by the tests: `accelerator`, `cpu_fallback=1`,
 `iterations`, `pose` (4x4
@@ -76,6 +95,7 @@ the box, scores, mask (`numpy.packbits`, base64) and 4x4 pose, plus
 ## Tests
 
 ```bash
+pip install opencv-python-headless   # for the tests only
 PYTHONPATH=<dir with litert_pose_estimation*.so>:demo python3 demo/demo_test.py -v
 ```
 
